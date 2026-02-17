@@ -16,12 +16,13 @@ const OPENCLAW_BIN_CANDIDATES = [
   'openclaw',
 ].filter((value): value is string => Boolean(value));
 
-const ACTIVE_AGE_MS = 20 * 60 * 1000;
+const RECENT_AGE_MS = 20 * 60 * 1000;
+const IDLE_AGE_MS = 2 * 60 * 60 * 1000;
 const MAX_AGENT_COLUMNS = 8;
 const MAX_MESSAGES_PER_AGENT = 40;
 const MAX_LINES_PER_SESSION_PARSE = 250;
 
-export type AgentStatus = 'active' | 'queued' | 'completed' | 'unknown';
+export type AgentStatus = 'active' | 'queued' | 'recent' | 'idle' | 'completed' | 'failed' | 'unknown';
 
 export interface AgentThreadMessage {
   id: string;
@@ -62,7 +63,15 @@ interface SubagentRunRecord {
   childSessionKey: string;
   label?: string;
   model?: string;
+  createdAt?: number;
   startedAt?: number;
+  endedAt?: number;
+  status?: string;
+  state?: string;
+  phase?: string;
+  outcome?: {
+    status?: string;
+  };
 }
 
 interface SessionsCommandOutput {
@@ -248,17 +257,78 @@ function loadRuns(): SubagentRunRecord[] {
   return Object.values(parsed.runs ?? {});
 }
 
-function deriveStatus(session: SessionRecord, runBySessionKey: Map<string, SubagentRunRecord>): AgentStatus {
-  const run = runBySessionKey.get(session.key);
-  if (run) {
-    return run.startedAt ? 'active' : 'queued';
+function normalizeStatusToken(status: string | undefined): string {
+  return (status ?? '').trim().toLowerCase();
+}
+
+const RUNNING_STATUS_TOKENS = ['running', 'in_progress', 'in-progress', 'active', 'processing'];
+const QUEUED_STATUS_TOKENS = ['queued', 'queue', 'pending', 'created', 'scheduled', 'waiting'];
+const COMPLETED_STATUS_TOKENS = ['done', 'completed', 'complete', 'success', 'succeeded', 'ok', 'finished'];
+const FAILED_STATUS_TOKENS = ['failed', 'error', 'errored', 'failure', 'timeout', 'timed_out', 'timed-out'];
+
+function runStatusCandidates(run: SubagentRunRecord): string[] {
+  return [run.status, run.state, run.phase, run.outcome?.status]
+    .map(normalizeStatusToken)
+    .filter((value) => Boolean(value));
+}
+
+function hasAnyToken(candidates: string[], tokens: string[]): boolean {
+  return candidates.some((value) => tokens.includes(value));
+}
+
+function runRecencyMs(run: SubagentRunRecord): number {
+  return Math.max(run.endedAt ?? 0, run.startedAt ?? 0, run.createdAt ?? 0);
+}
+
+function deriveRunStatus(run: SubagentRunRecord): AgentStatus {
+  const candidates = runStatusCandidates(run);
+
+  if (run.endedAt) {
+    if (hasAnyToken(candidates, FAILED_STATUS_TOKENS)) return 'failed';
+    return 'completed';
   }
 
-  if (typeof session.ageMs === 'number') {
-    return session.ageMs <= ACTIVE_AGE_MS ? 'active' : 'completed';
+  if (hasAnyToken(candidates, FAILED_STATUS_TOKENS)) return 'failed';
+  if (hasAnyToken(candidates, COMPLETED_STATUS_TOKENS)) return 'completed';
+  if (hasAnyToken(candidates, QUEUED_STATUS_TOKENS)) return 'queued';
+
+  if (hasAnyToken(candidates, RUNNING_STATUS_TOKENS)) {
+    const ageMs = Date.now() - runRecencyMs(run);
+    return ageMs <= RECENT_AGE_MS ? 'active' : 'idle';
   }
 
+  if (run.startedAt) {
+    const ageMs = Date.now() - run.startedAt;
+    return ageMs <= RECENT_AGE_MS ? 'recent' : 'idle';
+  }
+
+  if (run.createdAt) return 'queued';
   return 'unknown';
+}
+
+function deriveSessionOnlyStatus(session: SessionRecord): AgentStatus {
+  if (typeof session.ageMs !== 'number') return 'unknown';
+  if (session.ageMs <= RECENT_AGE_MS) return 'recent';
+  if (session.ageMs <= IDLE_AGE_MS) return 'idle';
+  return 'completed';
+}
+
+function deriveStatus(session: SessionRecord, runBySessionKey: Map<string, SubagentRunRecord>): AgentStatus {
+  const sessionStatus = deriveSessionOnlyStatus(session);
+  const run = runBySessionKey.get(session.key);
+  if (!run) return sessionStatus;
+
+  const runStatus = deriveRunStatus(run);
+
+  if (runStatus === 'active' && sessionStatus !== 'recent') {
+    return sessionStatus;
+  }
+
+  if (runStatus === 'recent' || runStatus === 'unknown') {
+    return sessionStatus;
+  }
+
+  return runStatus;
 }
 
 export async function getAgentsSnapshot(): Promise<AgentsSnapshot> {
@@ -282,7 +352,10 @@ export async function getAgentsSnapshot(): Promise<AgentsSnapshot> {
 
   const runBySessionKey = new Map<string, SubagentRunRecord>();
   for (const run of runs) {
-    if (run.childSessionKey) {
+    if (!run.childSessionKey) continue;
+
+    const current = runBySessionKey.get(run.childSessionKey);
+    if (!current || runRecencyMs(run) >= runRecencyMs(current)) {
       runBySessionKey.set(run.childSessionKey, run);
     }
   }
@@ -322,10 +395,10 @@ export async function getAgentsSnapshot(): Promise<AgentsSnapshot> {
       id: run.childSessionKey,
       name: run.label || formatAgentName(run.childSessionKey),
       sessionKey: run.childSessionKey,
-      status: run.startedAt ? 'active' : 'queued',
+      status: deriveRunStatus(run),
       model: run.model,
       runtime: 'subagent',
-      lastActivity: toIso(run.startedAt),
+      lastActivity: toIso(run.endedAt ?? run.startedAt ?? run.createdAt),
       messages: [],
       canSend: false,
       source: 'subagent-run',
