@@ -48,6 +48,21 @@ interface SendResult {
   reply?: string;
 }
 
+type AgentControlAction = 'nudge' | 'stop' | 'spawnTemplate';
+type AgentControlTemplateId = 'research-brief' | 'bug-triage' | 'build-feature';
+
+interface AgentControlResult {
+  ok: boolean;
+  error?: string;
+  reply?: string;
+}
+
+const CONTROL_TEMPLATE_OPTIONS: { id: AgentControlTemplateId; label: string }[] = [
+  { id: 'research-brief', label: 'Research brief' },
+  { id: 'bug-triage', label: 'Bug triage' },
+  { id: 'build-feature', label: 'Build feature' },
+];
+
 function formatLastActivity(ts?: string): string {
   if (!ts) return 'Unknown';
 
@@ -474,13 +489,22 @@ function JarvisProgressSection({ jarvisStatus }: { jarvisStatus: DashboardData['
 function AgentColumn({
   agent,
   onSend,
+  onControl,
 }: {
   agent: AgentColumnData;
   onSend: (sessionId: string, message: string) => Promise<SendResult>;
+  onControl: (
+    sessionId: string,
+    action: AgentControlAction,
+    templateId?: AgentControlTemplateId
+  ) => Promise<AgentControlResult>;
 }) {
   const [composer, setComposer] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [sendState, setSendState] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+  const [templateId, setTemplateId] = useState<AgentControlTemplateId>('research-brief');
+  const [isControlling, setIsControlling] = useState(false);
+  const [controlState, setControlState] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
 
   const badge = statusBadge(agent.status);
 
@@ -503,6 +527,26 @@ function AgentColumn({
     }
 
     setIsSending(false);
+  }
+
+  async function handleControl(action: AgentControlAction) {
+    if (!agent.sessionId || isControlling) return;
+
+    setIsControlling(true);
+    setControlState(null);
+
+    const result = await onControl(agent.sessionId, action, action === 'spawnTemplate' ? templateId : undefined);
+
+    if (result.ok) {
+      setControlState({
+        kind: 'success',
+        message: result.reply ? `Control executed. Reply: ${result.reply.slice(0, 180)}` : 'Control executed.',
+      });
+    } else {
+      setControlState({ kind: 'error', message: result.error ?? 'Control action failed.' });
+    }
+
+    setIsControlling(false);
   }
 
   return (
@@ -589,6 +633,69 @@ function AgentColumn({
               {sendState.message}
             </p>
           )}
+
+          <Separator />
+
+          <div className="space-y-2 rounded-md border bg-muted/20 p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs text-muted-foreground">Controls (V2)</p>
+              {isControlling && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!agent.canSend || !agent.sessionId || isControlling || isSending}
+                onClick={() => void handleControl('nudge')}
+              >
+                Nudge
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!agent.canSend || !agent.sessionId || isControlling || isSending}
+                onClick={() => void handleControl('stop')}
+              >
+                Stop
+              </Button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <select
+                value={templateId}
+                onChange={(event) => setTemplateId(event.target.value as AgentControlTemplateId)}
+                disabled={!agent.canSend || !agent.sessionId || isControlling || isSending}
+                className="h-9 flex-1 rounded-md border bg-background px-2 text-xs outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+              >
+                {CONTROL_TEMPLATE_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={!agent.canSend || !agent.sessionId || isControlling || isSending}
+                onClick={() => void handleControl('spawnTemplate')}
+              >
+                Run
+              </Button>
+            </div>
+
+            {controlState && (
+              <p
+                className={`text-xs ${
+                  controlState.kind === 'success'
+                    ? 'text-emerald-700 dark:text-emerald-400'
+                    : 'text-red-700 dark:text-red-400'
+                }`}
+              >
+                {controlState.message}
+              </p>
+            )}
+          </div>
         </div>
       </CardContent>
     </Card>
@@ -665,6 +772,40 @@ function AgentsTab() {
     }
   }
 
+  async function controlAgent(
+    sessionId: string,
+    action: AgentControlAction,
+    templateId?: AgentControlTemplateId
+  ): Promise<AgentControlResult> {
+    try {
+      const response = await fetch('/api/agents/control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, action, templateId }),
+      });
+
+      const data = (await response.json()) as { ok?: boolean; error?: string; reply?: string };
+      if (!response.ok || !data.ok) {
+        return {
+          ok: false,
+          error: data.error ?? `HTTP ${response.status}`,
+        };
+      }
+
+      void loadAgents(true);
+
+      return {
+        ok: true,
+        reply: data.reply,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : 'Unknown control failure',
+      };
+    }
+  }
+
   if (loading) {
     return (
       <Card>
@@ -733,7 +874,7 @@ function AgentsTab() {
       ) : (
         <div className="flex min-w-0 flex-col gap-4 md:flex-row md:items-stretch md:overflow-x-auto md:overflow-y-hidden md:pb-3">
           {agents.map((agent) => (
-            <AgentColumn key={agent.id} agent={agent} onSend={sendToSession} />
+            <AgentColumn key={agent.id} agent={agent} onSend={sendToSession} onControl={controlAgent} />
           ))}
         </div>
       )}
