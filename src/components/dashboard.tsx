@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -42,28 +42,30 @@ interface AgentsSnapshotResponse {
   limitations: string[];
 }
 
+
 interface SendResult {
   ok: boolean;
   error?: string;
   reply?: string;
 }
 
-type AgentControlAction = 'nudge' | 'stop' | 'spawnTemplate';
-type AgentControlTemplateId = 'research-brief' | 'bug-triage' | 'build-feature';
-
-interface AgentControlResult {
+interface TakeActionApiResult {
   ok: boolean;
   error?: string;
-  reply?: string;
+  startedAutonomous?: boolean;
+  userMessage?: string;
 }
 
-const CONTROL_TEMPLATE_OPTIONS: { id: AgentControlTemplateId; label: string }[] = [
-  { id: 'research-brief', label: 'Research brief' },
-  { id: 'bug-triage', label: 'Bug triage' },
-  { id: 'build-feature', label: 'Build feature' },
-];
+interface MarkDoneApiResult {
+  ok: boolean;
+  error?: string;
+  message?: string;
+  alreadyDone?: boolean;
+  updatedCheckbox?: boolean;
+  removedFromStatus?: number;
+}
 
-function formatLastActivity(ts?: string): string {
+function formatLastActivity(ts?: string | number): string {
   if (!ts) return 'Unknown';
 
   const date = new Date(ts);
@@ -133,7 +135,7 @@ function statusBadge(status: AgentStatus): { label: string; className: string } 
 
 function MarkdownMessage({ text }: { text: string }) {
   return (
-    <div className="agent-markdown w-full min-w-0 text-sm leading-relaxed text-foreground">
+    <div className="agent-markdown w-full min-w-0 max-w-full text-sm leading-relaxed text-foreground [overflow-wrap:anywhere] [&_*]:min-w-0 [&_p]:break-words [&_li]:break-words [&_code]:break-all [&_code]:whitespace-pre-wrap [&_pre]:max-w-full [&_pre]:overflow-x-hidden [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre_code]:break-all [&_pre_code]:whitespace-pre-wrap [&_.hljs]:overflow-x-hidden [&_.hljs]:break-all [&_.hljs]:whitespace-pre-wrap">
       <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
         {text}
       </ReactMarkdown>
@@ -141,7 +143,15 @@ function MarkdownMessage({ text }: { text: string }) {
   );
 }
 
-function TaskItem({ task, showSource = false }: { task: Task; showSource?: boolean }) {
+function TaskItem({
+  task,
+  showSource = false,
+  showNeedsBadge = true,
+}: {
+  task: Task;
+  showSource?: boolean;
+  showNeedsBadge?: boolean;
+}) {
   return (
     <div
       className={`p-3 rounded-lg border transition-all ${
@@ -174,10 +184,104 @@ function TaskItem({ task, showSource = false }: { task: Task; showSource?: boole
             </div>
           )}
         </div>
-        {task.needsAndrew && (
+        {showNeedsBadge && task.needsAndrew && (
           <Badge className="bg-amber-500 text-amber-950 hover:bg-amber-400 flex-shrink-0">Needs You</Badge>
         )}
       </div>
+    </div>
+  );
+}
+
+function UnblockTaskItem({
+  task,
+  showSource = false,
+  summaryAction,
+}: {
+  task: Task;
+  showSource?: boolean;
+  summaryAction?: React.ReactNode;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const instructions = task.instructions && task.instructions.length > 0 ? task.instructions : [task.text];
+
+  function toggleExpanded() {
+    setIsExpanded((prev) => !prev);
+  }
+
+  return (
+    <div
+      className={`rounded-lg border transition-all ${
+        task.priority === 'high' ? 'bg-red-500/5 border-red-500/30 hover:border-red-500/50' : 'bg-card border-border hover:border-primary/30'
+      }`}
+    >
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={toggleExpanded}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            toggleExpanded();
+          }
+        }}
+        className="w-full text-left p-3 cursor-pointer"
+        aria-expanded={isExpanded}
+      >
+        <div className="flex items-start gap-3">
+          <div
+            className={`mt-1 w-2 h-2 rounded-full flex-shrink-0 ${
+              task.priority === 'high'
+                ? 'bg-red-500'
+                : task.priority === 'medium'
+                  ? 'bg-amber-500'
+                  : 'bg-muted-foreground'
+            }`}
+          />
+
+          <div className="flex-1 min-w-0">
+            <p className="text-sm leading-relaxed">{task.text}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {instructions.length} step{instructions.length === 1 ? '' : 's'} to unblock
+            </p>
+          </div>
+
+          <div className="flex items-start gap-2 flex-shrink-0" onClick={(event) => event.stopPropagation()}>
+            {summaryAction}
+            {isExpanded ? (
+              <ChevronUp className="w-4 h-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="w-4 h-4 text-muted-foreground" />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {isExpanded && (
+        <div className="px-3 pb-3">
+          <div className="border-t pt-3 ml-5 space-y-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Steps</p>
+              <ol className="list-decimal pl-4 space-y-1.5 text-sm leading-relaxed">
+                {instructions.map((instruction, index) => (
+                  <li key={`${task.id}-instruction-${index}`}>{instruction}</li>
+                ))}
+              </ol>
+            </div>
+
+            {(showSource || task.linkedProject) && (
+              <div className="flex flex-wrap gap-1.5">
+                {task.linkedProject && (
+                  <Badge variant="outline" className="text-xs">
+                    <Folder className="w-3 h-3 mr-1" />
+                    {task.linkedProject.replace(' - Project Board', '')}
+                  </Badge>
+                )}
+                {showSource && <Badge variant="secondary" className="text-xs">{task.source}</Badge>}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -381,9 +485,268 @@ function PortfolioDetail({ portfolio, onBack }: { portfolio: Portfolio; onBack: 
   );
 }
 
-function UnblockJarvisSection({ jarvisStatus }: { jarvisStatus: DashboardData['jarvisStatus'] }) {
+function UnblockJarvisSection({
+  jarvisStatus,
+  onTaskMarkedDone,
+}: {
+  jarvisStatus: DashboardData['jarvisStatus'];
+  onTaskMarkedDone?: () => Promise<void> | void;
+}) {
   const highPriorityItems = jarvisStatus.needsAndrew.filter((t) => t.priority === 'high');
   const otherItems = jarvisStatus.needsAndrew.filter((t) => t.priority !== 'high');
+
+  const [takingActionTaskId, setTakingActionTaskId] = useState<string | null>(null);
+  const [takeActionStateByTaskId, setTakeActionStateByTaskId] = useState<
+    Record<string, { kind: 'success' | 'error'; message: string; startedAutonomous?: boolean } | undefined>
+  >({});
+  const [markingDoneTaskId, setMarkingDoneTaskId] = useState<string | null>(null);
+  const [markDoneStateByTaskId, setMarkDoneStateByTaskId] = useState<
+    Record<string, { kind: 'success' | 'error'; message: string } | undefined>
+  >({});
+
+  const visibleTaskIds = useMemo(() => {
+    return [
+      jarvisStatus.nextBestAction?.id,
+      ...highPriorityItems.map((task) => task.id),
+      ...otherItems.slice(0, 8).map((task) => task.id),
+      ...jarvisStatus.alternates.map((task) => task.id),
+    ].filter((id): id is string => Boolean(id));
+  }, [highPriorityItems, jarvisStatus.alternates, jarvisStatus.nextBestAction?.id, otherItems]);
+
+  useEffect(() => {
+    const visibleSet = new Set(visibleTaskIds);
+
+    setTakeActionStateByTaskId((current) => {
+      const nextEntries = Object.entries(current).filter(([taskId]) => visibleSet.has(taskId));
+      return Object.fromEntries(nextEntries);
+    });
+
+    setTakingActionTaskId((current) => {
+      if (!current) return current;
+      return visibleSet.has(current) ? current : null;
+    });
+
+    setMarkDoneStateByTaskId((current) => {
+      const nextEntries = Object.entries(current).filter(([taskId]) => visibleSet.has(taskId));
+      return Object.fromEntries(nextEntries);
+    });
+
+    setMarkingDoneTaskId((current) => {
+      if (!current) return current;
+      return visibleSet.has(current) ? current : null;
+    });
+  }, [visibleTaskIds]);
+
+  async function handleTakeAction(task: Task) {
+    if (takingActionTaskId === task.id) return;
+
+    setTakingActionTaskId(task.id);
+    setTakeActionStateByTaskId((current) => ({
+      ...current,
+      [task.id]: undefined,
+    }));
+
+    try {
+      const response = await fetch('/api/next-action/take', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          task: {
+            id: task.id,
+            text: task.text,
+            source: task.source,
+            sourcePath: task.sourcePath,
+            linkedProject: task.linkedProject,
+            instructions: task.instructions,
+            needsAndrew: task.needsAndrew,
+            priority: task.priority,
+          },
+        }),
+      });
+
+      const payload = (await response.json()) as TakeActionApiResult;
+
+      if (!response.ok || !payload.ok) {
+        setTakeActionStateByTaskId((current) => ({
+          ...current,
+          [task.id]: {
+            kind: 'error',
+            message: payload.error ?? `Could not take action (HTTP ${response.status}).`,
+          },
+        }));
+        return;
+      }
+
+      setTakeActionStateByTaskId((current) => ({
+        ...current,
+        [task.id]: {
+          kind: 'success',
+          message:
+            payload.userMessage ??
+            (payload.startedAutonomous
+              ? 'I’m taking this on now and I will send you the next handoff step shortly.'
+              : 'This one still needs your input first. I sent a concrete next step.'),
+          startedAutonomous: payload.startedAutonomous,
+        },
+      }));
+    } catch (error) {
+      setTakeActionStateByTaskId((current) => ({
+        ...current,
+        [task.id]: {
+          kind: 'error',
+          message: error instanceof Error ? error.message : 'Unknown take-action failure.',
+        },
+      }));
+    } finally {
+      setTakingActionTaskId((current) => (current === task.id ? null : current));
+    }
+  }
+
+  async function handleMarkAsDone(task: Task) {
+    if (markingDoneTaskId === task.id) return;
+
+    setMarkingDoneTaskId(task.id);
+    setMarkDoneStateByTaskId((current) => ({
+      ...current,
+      [task.id]: undefined,
+    }));
+
+    try {
+      const response = await fetch('/api/next-action/done', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          task: {
+            id: task.id,
+            text: task.text,
+            sourcePath: task.sourcePath,
+          },
+        }),
+      });
+
+      const payload = (await response.json()) as MarkDoneApiResult;
+
+      if (!response.ok || !payload.ok) {
+        setMarkDoneStateByTaskId((current) => ({
+          ...current,
+          [task.id]: {
+            kind: 'error',
+            message: payload.error ?? `Could not mark done (HTTP ${response.status}).`,
+          },
+        }));
+        return;
+      }
+
+      setMarkDoneStateByTaskId((current) => ({
+        ...current,
+        [task.id]: {
+          kind: 'success',
+          message: payload.message ?? 'Task marked done.',
+        },
+      }));
+
+      if (onTaskMarkedDone) {
+        await onTaskMarkedDone();
+      }
+    } catch (error) {
+      setMarkDoneStateByTaskId((current) => ({
+        ...current,
+        [task.id]: {
+          kind: 'error',
+          message: error instanceof Error ? error.message : 'Unknown mark-done failure.',
+        },
+      }));
+    } finally {
+      setMarkingDoneTaskId((current) => (current === task.id ? null : current));
+    }
+  }
+
+  function renderTakeActionButton(task: Task) {
+    const isTakingAction = takingActionTaskId === task.id;
+
+    return (
+      <Button
+        size="sm"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void handleTakeAction(task);
+        }}
+        disabled={isTakingAction}
+        className="h-8 px-3.5 text-xs font-semibold rounded-md bg-emerald-200 text-emerald-900 hover:bg-emerald-100 border border-emerald-300 shadow-sm focus-visible:ring-2 focus-visible:ring-emerald-300/60"
+      >
+        {isTakingAction ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+        <span className={isTakingAction ? 'ml-1.5' : ''}>{isTakingAction ? 'Taking…' : 'Take Action'}</span>
+      </Button>
+    );
+  }
+
+  function renderMarkDoneButton(task: Task) {
+    const isMarkingDone = markingDoneTaskId === task.id;
+
+    return (
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void handleMarkAsDone(task);
+        }}
+        disabled={isMarkingDone}
+        className="h-8 px-3.5 text-xs rounded-md"
+      >
+        {isMarkingDone ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+        <span className={isMarkingDone ? 'ml-1.5' : ''}>{isMarkingDone ? 'Marking…' : 'Mark as done'}</span>
+      </Button>
+    );
+  }
+
+  function renderTaskActionButtons(task: Task) {
+    return (
+      <div className="flex flex-col items-stretch gap-1.5">
+        {renderTakeActionButton(task)}
+        {renderMarkDoneButton(task)}
+      </div>
+    );
+  }
+
+  function renderTakeActionState(task: Task) {
+    const state = takeActionStateByTaskId[task.id];
+    if (!state) return null;
+
+    return (
+      <div
+        className={`rounded-md border p-2.5 text-xs whitespace-pre-wrap ${
+          state.kind === 'success'
+            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300'
+            : 'border-red-500/30 bg-red-500/10 text-red-800 dark:text-red-300'
+        }`}
+      >
+        {state.kind === 'success' && (
+          <p className="font-medium mb-1">{state.startedAutonomous ? 'Action started' : 'Needs you first'}</p>
+        )}
+        <p>{state.message}</p>
+      </div>
+    );
+  }
+
+  function renderMarkDoneState(task: Task) {
+    const state = markDoneStateByTaskId[task.id];
+    if (!state) return null;
+
+    return (
+      <div
+        className={`rounded-md border p-2.5 text-xs whitespace-pre-wrap ${
+          state.kind === 'success'
+            ? 'border-sky-500/30 bg-sky-500/10 text-sky-800 dark:text-sky-300'
+            : 'border-red-500/30 bg-red-500/10 text-red-800 dark:text-red-300'
+        }`}
+      >
+        <p>{state.message}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -395,8 +758,15 @@ function UnblockJarvisSection({ jarvisStatus }: { jarvisStatus: DashboardData['j
               <CardTitle className="text-base">Next Best Action</CardTitle>
             </div>
           </CardHeader>
-          <CardContent>
-            <TaskItem task={jarvisStatus.nextBestAction} showSource />
+          <CardContent className="space-y-3">
+            <UnblockTaskItem
+              task={jarvisStatus.nextBestAction}
+              showSource
+              summaryAction={renderTaskActionButtons(jarvisStatus.nextBestAction)}
+            />
+
+            {renderTakeActionState(jarvisStatus.nextBestAction)}
+            {renderMarkDoneState(jarvisStatus.nextBestAction)}
           </CardContent>
         </Card>
       )}
@@ -412,7 +782,11 @@ function UnblockJarvisSection({ jarvisStatus }: { jarvisStatus: DashboardData['j
           </CardHeader>
           <CardContent className="space-y-2">
             {highPriorityItems.map((task) => (
-              <TaskItem key={task.id} task={task} showSource />
+              <div key={task.id} className="space-y-2">
+                <UnblockTaskItem task={task} showSource summaryAction={renderTaskActionButtons(task)} />
+                {renderTakeActionState(task)}
+                {renderMarkDoneState(task)}
+              </div>
             ))}
           </CardContent>
         </Card>
@@ -420,16 +794,21 @@ function UnblockJarvisSection({ jarvisStatus }: { jarvisStatus: DashboardData['j
 
       {otherItems.length > 0 && (
         <Card>
-          <CardHeader className="pb-2">
-            <div className="flex items-center gap-2">
-              <Clock className="w-5 h-5 text-muted-foreground" />
-              <CardTitle className="text-base">Waiting on You</CardTitle>
+          <CardContent className="pt-4 space-y-2">
+            <div className="flex items-center justify-between text-xs text-muted-foreground pb-1">
+              <div className="flex items-center gap-1.5">
+                <Clock className="w-4 h-4" />
+                <span>Queue</span>
+              </div>
               <Badge variant="secondary">{otherItems.length}</Badge>
             </div>
-          </CardHeader>
-          <CardContent className="space-y-2">
+
             {otherItems.slice(0, 8).map((task) => (
-              <TaskItem key={task.id} task={task} showSource />
+              <div key={task.id} className="space-y-2">
+                <UnblockTaskItem task={task} showSource summaryAction={renderTaskActionButtons(task)} />
+                {renderTakeActionState(task)}
+                {renderMarkDoneState(task)}
+              </div>
             ))}
             {otherItems.length > 8 && (
               <p className="text-xs text-muted-foreground text-center pt-2">+{otherItems.length - 8} more items</p>
@@ -449,7 +828,11 @@ function UnblockJarvisSection({ jarvisStatus }: { jarvisStatus: DashboardData['j
           </CardHeader>
           <CardContent className="space-y-2">
             {jarvisStatus.alternates.map((task) => (
-              <TaskItem key={task.id} task={task} />
+              <div key={task.id} className="space-y-2">
+                <UnblockTaskItem task={task} showSource summaryAction={renderTaskActionButtons(task)} />
+                {renderTakeActionState(task)}
+                {renderMarkDoneState(task)}
+              </div>
             ))}
           </CardContent>
         </Card>
@@ -489,24 +872,38 @@ function JarvisProgressSection({ jarvisStatus }: { jarvisStatus: DashboardData['
 function AgentColumn({
   agent,
   onSend,
-  onControl,
 }: {
   agent: AgentColumnData;
   onSend: (sessionId: string, message: string) => Promise<SendResult>;
-  onControl: (
-    sessionId: string,
-    action: AgentControlAction,
-    templateId?: AgentControlTemplateId
-  ) => Promise<AgentControlResult>;
 }) {
   const [composer, setComposer] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [sendState, setSendState] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
-  const [templateId, setTemplateId] = useState<AgentControlTemplateId>('research-brief');
-  const [isControlling, setIsControlling] = useState(false);
-  const [controlState, setControlState] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
 
   const badge = statusBadge(agent.status);
+  const safeMessages = Array.isArray(agent.messages) ? agent.messages : [];
+  const lastMessageId = safeMessages[safeMessages.length - 1]?.id;
+  const transcriptContainerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const viewport = transcriptContainerRef.current?.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]');
+    if (!viewport) return;
+
+    const scrollToLatest = () => {
+      viewport.scrollTop = viewport.scrollHeight;
+    };
+
+    scrollToLatest();
+    const rafId = window.requestAnimationFrame(scrollToLatest);
+    const rafId2 = window.requestAnimationFrame(scrollToLatest);
+    const timeoutId = window.setTimeout(scrollToLatest, 120);
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.cancelAnimationFrame(rafId2);
+      window.clearTimeout(timeoutId);
+    };
+  }, [agent.id, safeMessages.length, lastMessageId, agent.lastActivity]);
 
   async function handleSend() {
     if (!agent.sessionId || !composer.trim() || isSending) return;
@@ -529,94 +926,93 @@ function AgentColumn({
     setIsSending(false);
   }
 
-  async function handleControl(action: AgentControlAction) {
-    if (!agent.sessionId || isControlling) return;
-
-    setIsControlling(true);
-    setControlState(null);
-
-    const result = await onControl(agent.sessionId, action, action === 'spawnTemplate' ? templateId : undefined);
-
-    if (result.ok) {
-      setControlState({
-        kind: 'success',
-        message: result.reply ? `Control executed. Reply: ${result.reply.slice(0, 180)}` : 'Control executed.',
-      });
-    } else {
-      setControlState({ kind: 'error', message: result.error ?? 'Control action failed.' });
-    }
-
-    setIsControlling(false);
-  }
-
   return (
-    <Card className="w-full min-w-0 overflow-hidden h-[560px] flex flex-col md:min-w-[420px] md:flex-1">
-      <CardHeader className="pb-3 space-y-3 min-w-0">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            <CardTitle className="text-base truncate">{agent.name}</CardTitle>
-            <CardDescription className="truncate text-xs">{agent.sessionKey}</CardDescription>
+    <Card className="w-full min-w-0 flex flex-col overflow-hidden">
+      <CardHeader className="pb-2 space-y-2 min-w-0">
+        <div className="flex w-full min-w-0 items-start justify-between gap-2 pr-0.5">
+          <div className="min-w-0 flex-1 overflow-hidden">
+            <CardTitle className="w-full truncate text-base">{agent.name}</CardTitle>
+            <CardDescription className="w-full truncate text-xs" title={agent.sessionKey}>
+              Session {agent.sessionShortId}
+            </CardDescription>
           </div>
-          <Badge className={`${badge.className} overflow-visible whitespace-nowrap px-2.5 py-1 leading-tight min-h-6 min-w-max shrink-0`}>
+          <Badge className={`${badge.className} max-w-full !overflow-visible whitespace-nowrap px-2.5 py-1 leading-tight min-h-6 min-w-max shrink-0 self-start`}>
             {badge.label}
           </Badge>
         </div>
 
-        <div className="flex flex-wrap gap-1.5">
-          {agent.model && <Badge variant="outline" className="text-[10px]">{agent.model}</Badge>}
-          {agent.runtime && <Badge variant="outline" className="text-[10px]">{agent.runtime}</Badge>}
-          <Badge variant="secondary" className="text-[10px]">
+        <div className="flex min-w-0 flex-wrap gap-1.5">
+          {agent.model && (
+            <Badge
+              variant="outline"
+              className="max-w-full min-w-0 !overflow-visible text-[10px] leading-tight whitespace-normal break-words"
+            >
+              {agent.model}
+            </Badge>
+          )}
+          {agent.runtime && (
+            <Badge
+              variant="outline"
+              className="max-w-full min-w-0 !overflow-visible text-[10px] leading-tight whitespace-normal break-words"
+            >
+              {agent.runtime}
+            </Badge>
+          )}
+          <Badge variant="secondary" className="max-w-full !overflow-visible whitespace-nowrap text-[10px] leading-tight">
             Last: {formatLastActivity(agent.lastActivity)}
           </Badge>
         </div>
       </CardHeader>
 
-      <CardContent className="flex-1 flex min-h-0 min-w-0 flex-col gap-3 pt-0">
-        <ScrollArea className="flex-1 min-h-0 min-w-0 rounded-lg border bg-muted/20">
-          <div className="space-y-3 p-3 pr-4 min-w-0">
-            {agent.messages.length === 0 && (
-              <p className="text-xs text-muted-foreground">No transcript messages captured yet for this session.</p>
-            )}
+      <CardContent className="flex min-h-0 min-w-0 flex-col gap-2 pt-0">
+        <div ref={transcriptContainerRef} className="min-w-0">
+          <ScrollArea className="h-[300px] min-w-0 rounded-lg border bg-muted/20 sm:h-[320px] md:h-[340px] lg:h-[380px] xl:h-[420px] [&_[data-slot=scroll-area-viewport]]:overflow-x-hidden [&_[data-slot=scroll-area-viewport]>div]:!block [&_[data-slot=scroll-area-viewport]>div]:!w-full [&_[data-slot=scroll-area-viewport]>div]:!min-w-0">
+            <div className="w-full max-w-full min-w-0 space-y-3 p-3 pr-6">
+              {safeMessages.length === 0 && (
+                <p className="text-xs text-muted-foreground">No transcript messages captured yet for this session.</p>
+              )}
 
-            {agent.messages.map((message) => (
-              <div
-                key={message.id}
-                className={`w-full min-w-0 overflow-x-auto rounded-md border p-2.5 ${
-                  message.role === 'assistant'
-                    ? 'bg-card border-border'
-                    : message.role === 'user'
-                      ? 'bg-primary/10 border-primary/20'
-                      : 'bg-muted border-border'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1.5">
-                  <Badge variant="outline" className="text-[10px] capitalize">
-                    {message.role}
-                  </Badge>
-                  {message.timestamp && (
-                    <span className="text-[10px] text-muted-foreground">{formatLastActivity(message.timestamp)}</span>
-                  )}
+              {safeMessages.map((message) => (
+                <div
+                  key={message.id}
+                  className={`w-full max-w-full min-w-0 rounded-md border p-2.5 break-words [overflow-wrap:anywhere] ${
+                    message.role === 'assistant'
+                      ? 'bg-card border-border'
+                      : message.role === 'user'
+                        ? 'bg-primary/10 border-primary/20'
+                        : 'bg-muted border-border'
+                  }`}
+                >
+                  <div className="mb-1.5 flex min-w-0 items-center justify-between gap-2 pr-1">
+                    <Badge variant="outline" className="overflow-visible text-[10px] capitalize">
+                      {message.role}
+                    </Badge>
+                    {message.timestamp && (
+                      <span className="shrink-0 text-[10px] text-muted-foreground">{formatLastActivity(message.timestamp)}</span>
+                    )}
+                  </div>
+                  <MarkdownMessage text={message.text} />
                 </div>
-                <MarkdownMessage text={message.text} />
-              </div>
-            ))}
-          </div>
-        </ScrollArea>
+              ))}
+            </div>
+          </ScrollArea>
+        </div>
 
         <div className="space-y-2">
-          <textarea
-            value={composer}
-            onChange={(event) => setComposer(event.target.value)}
-            placeholder={agent.canSend ? 'Send a message to this agent session…' : 'Messaging unavailable for this session'}
-            disabled={!agent.canSend || isSending}
-            className="w-full min-h-[72px] resize-none rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
-          />
-
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-xs text-muted-foreground">
-              {agent.canSend ? 'Safe action only: sends a message to this session.' : 'Queued session without a message target yet.'}
-            </p>
-            <Button size="sm" onClick={handleSend} disabled={!agent.canSend || !composer.trim() || isSending}>
+          <div className="flex items-end gap-2">
+            <textarea
+              value={composer}
+              onChange={(event) => setComposer(event.target.value)}
+              placeholder={agent.canSend ? 'Send a message to this agent session…' : 'Messaging unavailable for this session'}
+              disabled={!agent.canSend || isSending}
+              className="flex-1 min-h-[64px] resize-none rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+            />
+            <Button
+              size="sm"
+              className="shrink-0"
+              onClick={handleSend}
+              disabled={!agent.canSend || !composer.trim() || isSending}
+            >
               {isSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               <span className="ml-1">Send</span>
             </Button>
@@ -634,85 +1030,20 @@ function AgentColumn({
             </p>
           )}
 
-          <Separator />
-
-          <div className="space-y-2 rounded-md border bg-muted/20 p-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-xs text-muted-foreground">Controls (V2)</p>
-              {isControlling && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!agent.canSend || !agent.sessionId || isControlling || isSending}
-                onClick={() => void handleControl('nudge')}
-              >
-                Nudge
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!agent.canSend || !agent.sessionId || isControlling || isSending}
-                onClick={() => void handleControl('stop')}
-              >
-                Stop
-              </Button>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <select
-                value={templateId}
-                onChange={(event) => setTemplateId(event.target.value as AgentControlTemplateId)}
-                disabled={!agent.canSend || !agent.sessionId || isControlling || isSending}
-                className="h-9 flex-1 rounded-md border bg-background px-2 text-xs outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
-              >
-                {CONTROL_TEMPLATE_OPTIONS.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={!agent.canSend || !agent.sessionId || isControlling || isSending}
-                onClick={() => void handleControl('spawnTemplate')}
-              >
-                Run
-              </Button>
-            </div>
-
-            {controlState && (
-              <p
-                className={`text-xs ${
-                  controlState.kind === 'success'
-                    ? 'text-emerald-700 dark:text-emerald-400'
-                    : 'text-red-700 dark:text-red-400'
-                }`}
-              >
-                {controlState.message}
-              </p>
-            )}
-          </div>
         </div>
       </CardContent>
     </Card>
   );
 }
 
-function AgentsTab() {
+function useAgentsSnapshot() {
   const [snapshot, setSnapshot] = useState<AgentsSnapshotResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
 
-  async function loadAgents(isSilentRefresh = false) {
+  const loadAgents = useCallback(async (isSilentRefresh = false) => {
     try {
-      if (isSilentRefresh) {
-        setRefreshing(true);
-      } else {
+      if (!isSilentRefresh) {
         setLoading(true);
       }
 
@@ -728,83 +1059,154 @@ function AgentsTab() {
       setError(err instanceof Error ? err.message : 'Failed to load agents data');
     } finally {
       setLoading(false);
-      setRefreshing(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     void loadAgents();
 
     const interval = window.setInterval(() => {
       void loadAgents(true);
-    }, 15_000);
+    }, 5_000);
 
-    return () => window.clearInterval(interval);
-  }, []);
+    const handleWindowFocus = () => {
+      void loadAgents(true);
+    };
 
-  async function sendToSession(sessionId: string, message: string): Promise<SendResult> {
-    try {
-      const response = await fetch('/api/agents/message', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, message }),
-      });
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void loadAgents(true);
+      }
+    };
 
-      const data = (await response.json()) as { ok?: boolean; error?: string; reply?: string };
-      if (!response.ok || !data.ok) {
+    window.addEventListener('focus', handleWindowFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', handleWindowFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [loadAgents]);
+
+  const sendToSession = useCallback(
+    async (sessionId: string, message: string): Promise<SendResult> => {
+      try {
+        const response = await fetch('/api/agents/message', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId, message }),
+        });
+
+        const data = (await response.json()) as { ok?: boolean; error?: string; reply?: string };
+        if (!response.ok || !data.ok) {
+          return {
+            ok: false,
+            error: data.error ?? `HTTP ${response.status}`,
+          };
+        }
+
+        void loadAgents(true);
+
+        return {
+          ok: true,
+          reply: data.reply,
+        };
+      } catch (err) {
         return {
           ok: false,
-          error: data.error ?? `HTTP ${response.status}`,
+          error: err instanceof Error ? err.message : 'Unknown send failure',
         };
       }
+    },
+    [loadAgents]
+  );
 
-      void loadAgents(true);
 
-      return {
-        ok: true,
-        reply: data.reply,
-      };
-    } catch (err) {
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : 'Unknown send failure',
-      };
-    }
+  return {
+    snapshot,
+    loading,
+    error,
+    loadAgents,
+    sendToSession,
+  };
+}
+
+function findMainAgent(agents: AgentColumnData[]): AgentColumnData | undefined {
+  return (
+    agents.find((agent) => agent.sessionKey === 'agent:main:main') ??
+    agents.find((agent) => agent.runtime === 'agent' && agent.sessionKey.endsWith(':main'))
+  );
+}
+
+function MainAgentPanel() {
+  const { snapshot, loading, error, loadAgents, sendToSession } = useAgentsSnapshot();
+  const agents = snapshot?.agents ?? [];
+  const mainAgent = useMemo(() => findMainAgent(agents), [agents]);
+
+  if (loading) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Bot className="w-5 h-5" />
+            Main Agent
+          </CardTitle>
+          <CardDescription>Loading active session…</CardDescription>
+        </CardHeader>
+      </Card>
+    );
   }
 
-  async function controlAgent(
-    sessionId: string,
-    action: AgentControlAction,
-    templateId?: AgentControlTemplateId
-  ): Promise<AgentControlResult> {
-    try {
-      const response = await fetch('/api/agents/control', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, action, templateId }),
-      });
-
-      const data = (await response.json()) as { ok?: boolean; error?: string; reply?: string };
-      if (!response.ok || !data.ok) {
-        return {
-          ok: false,
-          error: data.error ?? `HTTP ${response.status}`,
-        };
-      }
-
-      void loadAgents(true);
-
-      return {
-        ok: true,
-        reply: data.reply,
-      };
-    } catch (err) {
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : 'Unknown control failure',
-      };
-    }
+  if (error) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Main Agent</CardTitle>
+          <CardDescription className="text-red-400">Could not load agent data: {error}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="outline" onClick={() => void loadAgents()}>
+            Retry
+          </Button>
+        </CardContent>
+      </Card>
+    );
   }
+
+  if (!mainAgent) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Main Agent</CardTitle>
+          <CardDescription>No active Main Agent session is currently available.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {(snapshot?.limitations ?? []).length > 0 && (
+        <Card className="border-amber-500/30 bg-amber-500/10">
+          <CardContent className="pt-4 space-y-1">
+            {(snapshot?.limitations ?? []).map((item) => (
+              <p key={item} className="text-xs text-amber-200">
+                {item}
+              </p>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      <AgentColumn agent={mainAgent} onSend={sendToSession} />
+    </div>
+  );
+}
+
+function AgentsTab() {
+  const { snapshot, loading, error, loadAgents, sendToSession } = useAgentsSnapshot();
+  const agents = snapshot?.agents ?? [];
 
   if (loading) {
     return (
@@ -836,23 +1238,8 @@ function AgentsTab() {
     );
   }
 
-  const agents = snapshot?.agents ?? [];
-
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <h3 className="text-sm font-medium">Active Agents</h3>
-          <p className="text-xs text-muted-foreground">
-            Updated {snapshot?.lastUpdated ? formatLastActivity(snapshot.lastUpdated) : 'just now'}
-          </p>
-        </div>
-        <Button size="sm" variant="outline" onClick={() => void loadAgents(true)} disabled={refreshing}>
-          {refreshing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-          <span className="ml-1">Refresh</span>
-        </Button>
-      </div>
-
       {(snapshot?.limitations ?? []).length > 0 && (
         <Card className="border-amber-500/30 bg-amber-500/10">
           <CardContent className="pt-4 space-y-1">
@@ -872,9 +1259,9 @@ function AgentsTab() {
           </CardContent>
         </Card>
       ) : (
-        <div className="flex min-w-0 flex-col gap-4 md:flex-row md:items-stretch md:overflow-x-auto md:overflow-y-hidden md:pb-3">
+        <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           {agents.map((agent) => (
-            <AgentColumn key={agent.id} agent={agent} onSend={sendToSession} onControl={controlAgent} />
+            <AgentColumn key={agent.id} agent={agent} onSend={sendToSession} />
           ))}
         </div>
       )}
@@ -883,15 +1270,71 @@ function AgentsTab() {
 }
 
 export function Dashboard({ data }: DashboardProps) {
+  const [dashboardData, setDashboardData] = useState<DashboardData>(data);
   const [selectedPortfolio, setSelectedPortfolio] = useState<Portfolio | null>(null);
   const [activeTab, setActiveTab] = useState('unblock');
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const needsAndrewCount = data.jarvisStatus.needsAndrew.length;
+  async function refreshDashboardData(isSilent = true) {
+    try {
+      if (!isSilent) {
+        setIsRefreshing(true);
+      }
 
-  const openTaskCount = useMemo(() => data.allTasks.filter((task) => !task.completed).length, [data.allTasks]);
+      const response = await fetch('/api/data', { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const latest = (await response.json()) as DashboardData;
+      setDashboardData(latest);
+    } catch (error) {
+      console.error('Failed to refresh dashboard data:', error);
+    } finally {
+      if (!isSilent) {
+        setIsRefreshing(false);
+      }
+    }
+  }
+
+  useEffect(() => {
+    setDashboardData(data);
+  }, [data]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void refreshDashboardData(true);
+    }, 10_000);
+
+    return () => window.clearInterval(interval);
+  }, []);
+
+  const selectedPortfolioId = selectedPortfolio?.id;
+
+  useEffect(() => {
+    if (!selectedPortfolioId) return;
+
+    setSelectedPortfolio((current) => {
+      if (!current) return current;
+
+      const updatedPortfolio = dashboardData.portfolios.find((portfolio) => portfolio.id === selectedPortfolioId);
+      if (!updatedPortfolio) {
+        return null;
+      }
+
+      return updatedPortfolio;
+    });
+  }, [dashboardData.portfolios, selectedPortfolioId]);
+
+  const needsAndrewCount = dashboardData.jarvisStatus.needsAndrew.length;
+
+  const openTaskCount = useMemo(
+    () => dashboardData.allTasks.filter((task) => !task.completed).length,
+    [dashboardData.allTasks]
+  );
   const projectCount = useMemo(
-    () => data.portfolios.reduce((acc, portfolio) => acc + portfolio.projects.length, 0),
-    [data.portfolios]
+    () => dashboardData.portfolios.reduce((acc, portfolio) => acc + portfolio.projects.length, 0),
+    [dashboardData.portfolios]
   );
 
   return (
@@ -903,14 +1346,16 @@ export function Dashboard({ data }: DashboardProps) {
               <h1 className="text-xl font-bold bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
                 Mission Control
               </h1>
-              <p className="text-xs text-muted-foreground">Updated {new Date(data.lastUpdated).toLocaleTimeString()}</p>
+              <p className="text-xs text-muted-foreground">
+                Updated {new Date(dashboardData.lastUpdated).toLocaleTimeString()}
+              </p>
             </div>
             <div className="flex items-center gap-2">
               {needsAndrewCount > 0 && (
                 <Badge className="bg-amber-500 text-amber-950">{needsAndrewCount} need you</Badge>
               )}
-              <Button variant="ghost" size="icon" onClick={() => window.location.reload()}>
-                <RefreshCw className="w-4 h-4" />
+              <Button variant="ghost" size="icon" onClick={() => void refreshDashboardData(false)} disabled={isRefreshing}>
+                <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
               </Button>
               <ThemeToggle />
             </div>
@@ -958,13 +1403,19 @@ export function Dashboard({ data }: DashboardProps) {
               </TabsTrigger>
             </TabsList>
 
-            <TabsContent value="unblock" className="space-y-4 mt-0">
-              <UnblockJarvisSection jarvisStatus={data.jarvisStatus} />
+            <TabsContent value="unblock" className="mt-0">
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
+                <MainAgentPanel />
+                <UnblockJarvisSection
+                  jarvisStatus={dashboardData.jarvisStatus}
+                  onTaskMarkedDone={() => refreshDashboardData(true)}
+                />
+              </div>
             </TabsContent>
 
             <TabsContent value="portfolios" className="space-y-4 mt-0">
               <div className="grid gap-4">
-                {data.portfolios.map((portfolio) => (
+                {dashboardData.portfolios.map((portfolio) => (
                   <PortfolioCard key={portfolio.id} portfolio={portfolio} onSelect={() => setSelectedPortfolio(portfolio)} />
                 ))}
               </div>
@@ -975,7 +1426,7 @@ export function Dashboard({ data }: DashboardProps) {
             </TabsContent>
 
             <TabsContent value="jarvis" className="space-y-4 mt-0">
-              <JarvisProgressSection jarvisStatus={data.jarvisStatus} />
+              <JarvisProgressSection jarvisStatus={dashboardData.jarvisStatus} />
 
               <Card>
                 <CardHeader className="pb-2">
@@ -987,7 +1438,7 @@ export function Dashboard({ data }: DashboardProps) {
                 <CardContent>
                   <div className="grid grid-cols-2 gap-4 text-center">
                     <div className="p-3 rounded-lg bg-muted">
-                      <div className="text-2xl font-bold">{data.portfolios.length}</div>
+                      <div className="text-2xl font-bold">{dashboardData.portfolios.length}</div>
                       <div className="text-xs text-muted-foreground">Portfolios</div>
                     </div>
                     <div className="p-3 rounded-lg bg-muted">
