@@ -1,146 +1,121 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Card, CardContent } from '@/components/ui/card';
+import { KanbanBoard } from '@/components/kanban-board';
+import { ProjectDropdown } from '@/components/project-dropdown';
+import { MetricsStrip } from '@/components/metrics-strip';
+import { transformToKanbanLanes, extractProjectNames } from '@/lib/project-board-lanes';
+import { RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
-import { Separator } from '@/components/ui/separator';
-import { ProjectList, PortfolioDetail } from '@/components/dashboard';
-import { ArrowLeft, ChevronDown, Folder } from 'lucide-react';
-import type { DashboardData, Portfolio, Project } from '@/lib/vault-parser';
+import type { DashboardData } from '@/lib/vault-parser';
 
-export function ProjectBoardContent({ data }: { data: DashboardData }) {
-  const [selectedProject, setSelectedProject] = useState<string>('all');
-  const [selectedPortfolio, setSelectedPortfolio] = useState<Portfolio | null>(null);
+interface ProjectBoardContentProps {
+  data: DashboardData;
+}
 
-  const allProjects = useMemo(() => {
-    return data.portfolios.flatMap((p) => p.projects);
-  }, [data.portfolios]);
+export function ProjectBoardContent({ data }: ProjectBoardContentProps) {
+  const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
+  // Extract all tasks from all projects
+  const allTasks = useMemo(() => {
+    return data.allTasks;
+  }, [data.allTasks]);
+
+  // Extract unique project names
   const projectNames = useMemo(() => {
-    const names = new Set<string>();
-    for (const project of allProjects) {
-      names.add(project.name);
-    }
-    return Array.from(names).sort();
-  }, [allProjects]);
+    return extractProjectNames(allTasks);
+  }, [allTasks]);
 
-  const filteredProjects = useMemo(() => {
-    if (selectedProject === 'all') return allProjects;
-    return allProjects.filter((p) => p.name === selectedProject);
-  }, [allProjects, selectedProject]);
+  // Transform tasks into kanban lanes
+  const kanbanData = useMemo(() => {
+    const lanes = transformToKanbanLanes(allTasks, selectedProject);
+    return {
+      lanes,
+      totalTasks: lanes.reduce((sum, lane) => sum + lane.count, 0),
+      lastUpdated: data.lastUpdated,
+      selectedProject,
+      availableProjects: projectNames,
+    };
+  }, [allTasks, selectedProject, data.lastUpdated, projectNames]);
 
-  const openTaskCount = filteredProjects.reduce(
-    (acc, p) => acc + p.tasks.filter((t) => !t.completed).length,
-    0
-  );
-  const totalTaskCount = filteredProjects.reduce((acc, p) => acc + p.tasks.length, 0);
+  const handleProjectChange = (value: string) => {
+    setSelectedProject(value === 'all' ? null : value);
+  };
 
-  if (selectedPortfolio) {
-    return (
-      <div className="p-4">
-        <PortfolioDetail portfolio={selectedPortfolio} onBack={() => setSelectedPortfolio(null)} />
-      </div>
-    );
-  }
+  const handleRefresh = () => {
+    setIsRefreshing(true);
+    // Force a page refresh
+    window.location.reload();
+  };
+
+  // Format last updated timestamp
+  const formatLastUpdated = (isoString: string) => {
+    const date = new Date(isoString);
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+  };
 
   return (
-    <div className="p-4 space-y-4">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h2 className="text-xl font-bold">Project Board</h2>
-          <p className="text-xs text-muted-foreground">
-            {filteredProjects.length} project{filteredProjects.length === 1 ? '' : 's'} &middot;{' '}
-            {openTaskCount} open task{openTaskCount === 1 ? '' : 's'}
-          </p>
+    <div className="flex flex-col h-full">
+      {/* Header with dropdown and refresh */}
+      <div className="flex items-center justify-between gap-4 p-4 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <div className="flex items-center gap-4">
+          <div>
+            <h1 className="text-xl font-bold">Project Board</h1>
+            <p className="text-xs text-muted-foreground">
+              Last updated: {formatLastUpdated(data.lastUpdated)}
+            </p>
+          </div>
+          <ProjectDropdown
+            selectedProject={selectedProject}
+            projectNames={projectNames}
+            onProjectChange={handleProjectChange}
+          />
         </div>
-        <div className="relative">
-          <select
-            value={selectedProject}
-            onChange={(e) => setSelectedProject(e.target.value)}
-            className="appearance-none rounded-md border bg-background px-3 py-2 pr-8 text-sm outline-none focus:ring-2 focus:ring-ring"
-          >
-            <option value="all">All Projects</option>
-            {projectNames.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        </div>
+
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleRefresh}
+          disabled={isRefreshing}
+          className="gap-2"
+        >
+          <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+          Refresh
+        </Button>
       </div>
 
-      <div className="grid gap-4">
-        {data.portfolios.map((portfolio) => {
-          const portfolioProjects =
-            selectedProject === 'all'
-              ? portfolio.projects
-              : portfolio.projects.filter((p) => p.name === selectedProject);
-
-          if (portfolioProjects.length === 0) return null;
-
-          const completedTasks = portfolioProjects.reduce(
-            (acc, p) => acc + p.tasks.filter((t) => t.completed).length,
-            0
-          );
-          const total = portfolioProjects.reduce((acc, p) => acc + p.tasks.length, 0);
-          const progress = total > 0 ? (completedTasks / total) * 100 : 0;
-
-          return (
-            <Card
-              key={portfolio.id}
-              className="cursor-pointer transition-all hover:shadow-lg hover:border-primary/50 active:scale-[0.98]"
-              onClick={() => setSelectedPortfolio(portfolio)}
-            >
-              <CardHeader className="pb-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div
-                      className={`w-3 h-3 rounded-full ${
-                        portfolio.health === 'green'
-                          ? 'bg-green-500'
-                          : portfolio.health === 'yellow'
-                            ? 'bg-yellow-500'
-                            : portfolio.health === 'red'
-                              ? 'bg-red-500'
-                              : 'bg-green-500'
-                      }`}
-                    />
-                    <CardTitle className="text-lg">{portfolio.name}</CardTitle>
-                  </div>
-                  {portfolio.blockedCount > 0 && (
-                    <Badge variant="destructive" className="text-xs">
-                      {portfolio.blockedCount} blocked
-                    </Badge>
-                  )}
-                </div>
-                <CardDescription className="line-clamp-2 text-xs">{portfolio.vision}</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>{portfolioProjects.length} projects</span>
-                    <span>
-                      {completedTasks}/{total} tasks
-                    </span>
-                  </div>
-                  <Progress value={progress} className="h-1.5" />
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
+      {/* Metrics strip */}
+      <div className="border-b bg-muted/30 px-4">
+        <MetricsStrip lanes={kanbanData.lanes} totalTasks={kanbanData.totalTasks} />
       </div>
 
-      {filteredProjects.length === 0 && (
-        <Card>
-          <CardContent className="pt-6 text-sm text-muted-foreground text-center">
-            No projects found. Check your vault path configuration.
-          </CardContent>
-        </Card>
-      )}
+      {/* Kanban board */}
+      <div className="flex-1 p-4 overflow-hidden">
+        {kanbanData.totalTasks === 0 ? (
+          <Card className="h-full flex items-center justify-center">
+            <CardContent className="text-center py-12">
+              <p className="text-muted-foreground">
+                No tasks found.
+              </p>
+              <p className="text-sm text-muted-foreground mt-2">
+                {projectNames.length === 0
+                  ? 'Check your vault configuration.'
+                  : 'Try selecting a different project or check for tasks in your Project Board files.'}
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <KanbanBoard data={kanbanData} />
+        )}
+      </div>
     </div>
   );
 }

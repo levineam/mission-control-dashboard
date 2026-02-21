@@ -14,6 +14,7 @@ export interface Task {
   dueDate?: string;
   linkedProject?: string;
   instructions?: string[];
+  lastUpdated?: string;
 }
 
 export interface Project {
@@ -280,6 +281,15 @@ function extractTasks(content: string, source: string, sourcePath: string): Task
   const taskRegex = /^- \[([ x])\] (.+)$/gm;
   let match;
   let index = 0;
+
+  // Get file modification time for lastUpdated
+  let lastUpdated: string;
+  try {
+    const stats = fs.statSync(sourcePath);
+    lastUpdated = stats.mtime.toISOString();
+  } catch {
+    lastUpdated = new Date().toISOString();
+  }
   
   while ((match = taskRegex.exec(content)) !== null) {
     const completed = match[1] === 'x';
@@ -319,6 +329,7 @@ function extractTasks(content: string, source: string, sourcePath: string): Task
       dueDate,
       linkedProject,
       instructions: deriveTaskInstructions(text),
+      lastUpdated,
     });
   }
   
