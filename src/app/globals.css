@@ -1,26 +1,288 @@
 @import "tailwindcss";
 
+/* Tailwind v4: make `dark:` utilities respond to the `.dark` class (used by next-themes). */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.09 0.01 260);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.09 0.01 260);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.09 0.01 260);
+  --primary: oklch(0.45 0.15 200);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.96 0.01 260);
+  --secondary-foreground: oklch(0.09 0.01 260);
+  --muted: oklch(0.96 0.01 260);
+  --muted-foreground: oklch(0.45 0.01 260);
+  --accent: oklch(0.96 0.01 260);
+  --accent-foreground: oklch(0.09 0.01 260);
+  --destructive: oklch(0.65 0.25 25);
+  --destructive-foreground: oklch(1 0 0);
+  --border: oklch(0.89 0.01 260);
+  --input: oklch(0.89 0.01 260);
+  --ring: oklch(0.45 0.15 200);
+  --app-radius: 0.75rem;
+  --sidebar: oklch(0.98 0 0);
+  --sidebar-foreground: oklch(0.25 0.01 260);
+  --sidebar-primary: oklch(0.45 0.15 200);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.95 0.01 260);
+  --sidebar-accent-foreground: oklch(0.15 0.01 260);
+  --sidebar-border: oklch(0.89 0.01 260);
+  --sidebar-ring: oklch(0.45 0.15 200);
 }
 
-@theme inline {
+.dark {
+  --background: oklch(0.12 0.01 260);
+  --foreground: oklch(0.97 0.01 260);
+  --card: oklch(0.15 0.01 260);
+  --card-foreground: oklch(0.97 0.01 260);
+  --popover: oklch(0.15 0.01 260);
+  --popover-foreground: oklch(0.97 0.01 260);
+  --primary: oklch(0.78 0.15 200);
+  --primary-foreground: oklch(0.15 0.01 260);
+  --secondary: oklch(0.22 0.01 260);
+  --secondary-foreground: oklch(0.97 0.01 260);
+  --muted: oklch(0.22 0.01 260);
+  --muted-foreground: oklch(0.65 0.01 260);
+  --accent: oklch(0.22 0.01 260);
+  --accent-foreground: oklch(0.97 0.01 260);
+  --destructive: oklch(0.65 0.25 25);
+  --destructive-foreground: oklch(0.97 0.01 260);
+  --border: oklch(0.28 0.01 260);
+  --input: oklch(0.28 0.01 260);
+  --ring: oklch(0.78 0.15 200);
+  --sidebar: oklch(0.14 0.01 260);
+  --sidebar-foreground: oklch(0.95 0.01 260);
+  --sidebar-primary: oklch(0.78 0.15 200);
+  --sidebar-primary-foreground: oklch(0.15 0.01 260);
+  --sidebar-accent: oklch(0.20 0.01 260);
+  --sidebar-accent-foreground: oklch(0.95 0.01 260);
+  --sidebar-border: oklch(0.25 0.01 260);
+  --sidebar-ring: oklch(0.78 0.15 200);
+}
+
+@theme {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius: var(--app-radius);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Safe area for iPhone notch/home indicator */
+.safe-area-inset-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Better touch targets */
+button, a {
+  touch-action: manipulation;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: color-mix(in oklab, var(--color-muted) 65%, transparent);
+}
+
+::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--color-border) 90%, var(--color-foreground) 10%);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--color-border) 70%, var(--color-foreground) 30%);
+}
+
+/* Animations */
+@keyframes pulse-amber {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.animate-pulse-amber {
+  animation: pulse-amber 2s ease-in-out infinite;
+}
+
+/* Gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, oklch(0.78 0.15 200), oklch(0.7 0.18 250));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Card hover effects */
+.card-hover {
+  transition: all 0.2s ease;
+}
+
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+}
+
+/* Mobile-first responsive utilities */
+@media (max-width: 640px) {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* Focus styles */
+*:focus-visible {
+  outline: 2px solid oklch(0.78 0.15 200);
+  outline-offset: 2px;
+}
+
+/* Agents transcript markdown */
+.agent-markdown {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.agent-markdown,
+.agent-markdown * {
+  overflow-wrap: anywhere;
+}
+
+.agent-markdown > * {
+  max-width: 100%;
+}
+
+.agent-markdown p {
+  margin: 0.25rem 0;
+}
+
+.agent-markdown a {
+  word-break: break-word;
+}
+
+.agent-markdown :not(pre) > code {
+  font-size: 0.78rem;
+  padding: 0.1rem 0.25rem;
+  border-radius: 0.3rem;
+  border: 1px solid var(--color-border);
+  background: color-mix(in oklab, var(--color-muted) 80%, transparent);
+  color: var(--color-foreground);
+}
+
+.agent-markdown pre {
+  width: 100%;
+  max-width: 100%;
+  overflow: auto;
+  box-sizing: border-box;
+  border-radius: 0.5rem;
+  padding: 0.625rem;
+  background: color-mix(in oklab, var(--color-muted) 92%, black 8%);
+  border: 1px solid var(--color-border);
+  color: var(--color-foreground);
+}
+
+.agent-markdown pre code {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.agent-markdown ul,
+.agent-markdown ol {
+  margin-left: 1rem;
+  list-style-position: outside;
+}
+
+/* Light-mode highlight tuning */
+.agent-markdown .hljs-keyword,
+.agent-markdown .hljs-selector-tag,
+.agent-markdown .hljs-literal {
+  color: oklch(0.47 0.17 278);
+}
+
+.agent-markdown .hljs-string,
+.agent-markdown .hljs-attr,
+.agent-markdown .hljs-template-tag {
+  color: oklch(0.5 0.13 155);
+}
+
+.agent-markdown .hljs-number,
+.agent-markdown .hljs-symbol,
+.agent-markdown .hljs-meta {
+  color: oklch(0.58 0.14 45);
+}
+
+.dark .agent-markdown .hljs-keyword,
+.dark .agent-markdown .hljs-selector-tag,
+.dark .agent-markdown .hljs-literal {
+  color: oklch(0.8 0.15 260);
+}
+
+.dark .agent-markdown .hljs-string,
+.dark .agent-markdown .hljs-attr,
+.dark .agent-markdown .hljs-template-tag {
+  color: oklch(0.8 0.14 145);
+}
+
+.dark .agent-markdown .hljs-number,
+.dark .agent-markdown .hljs-symbol,
+.dark .agent-markdown .hljs-meta {
+  color: oklch(0.78 0.16 35);
+}
+
+@theme inline {
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
 }

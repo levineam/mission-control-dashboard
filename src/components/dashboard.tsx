@@ -36,7 +36,7 @@ interface DashboardProps {
   data: DashboardData;
 }
 
-interface AgentsSnapshotResponse {
+export interface AgentsSnapshotResponse {
   agents: AgentColumnData[];
   lastUpdated: string;
   limitations: string[];
@@ -65,7 +65,7 @@ interface MarkDoneApiResult {
   removedFromStatus?: number;
 }
 
-function formatLastActivity(ts?: string | number): string {
+export function formatLastActivity(ts?: string | number): string {
   if (!ts) return 'Unknown';
 
   const date = new Date(ts);
@@ -84,7 +84,7 @@ function formatLastActivity(ts?: string | number): string {
   });
 }
 
-function statusBadge(status: AgentStatus): { label: string; className: string } {
+export function statusBadge(status: AgentStatus): { label: string; className: string } {
   if (status === 'active') {
     return {
       label: 'Active',
@@ -224,10 +224,10 @@ function UnblockTaskItem({
             toggleExpanded();
           }
         }}
-        className="w-full text-left p-3 cursor-pointer"
+        className="w-full cursor-pointer p-2.5 text-left"
         aria-expanded={isExpanded}
       >
-        <div className="flex items-start gap-3">
+        <div className="flex items-start gap-2.5">
           <div
             className={`mt-1 w-2 h-2 rounded-full flex-shrink-0 ${
               task.priority === 'high'
@@ -238,14 +238,14 @@ function UnblockTaskItem({
             }`}
           />
 
-          <div className="flex-1 min-w-0">
-            <p className="text-sm leading-relaxed">{task.text}</p>
-            <p className="text-xs text-muted-foreground mt-1">
+          <div className="min-w-0 flex-1">
+            <p className={`text-sm leading-relaxed ${isExpanded ? '' : 'max-h-[2.8rem] overflow-hidden'}`}>{task.text}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
               {instructions.length} step{instructions.length === 1 ? '' : 's'} to unblock
             </p>
           </div>
 
-          <div className="flex items-start gap-2 flex-shrink-0" onClick={(event) => event.stopPropagation()}>
+          <div className="flex flex-shrink-0 items-start gap-1.5" onClick={(event) => event.stopPropagation()}>
             {summaryAction}
             {isExpanded ? (
               <ChevronUp className="w-4 h-4 text-muted-foreground" />
@@ -286,7 +286,7 @@ function UnblockTaskItem({
   );
 }
 
-function PortfolioCard({ portfolio, onSelect }: { portfolio: Portfolio; onSelect: () => void }) {
+export function PortfolioCard({ portfolio, onSelect }: { portfolio: Portfolio; onSelect: () => void }) {
   const completedTasks = portfolio.projects.reduce((acc, p) => acc + p.tasks.filter((t) => t.completed).length, 0);
   const totalTasks = portfolio.projects.reduce((acc, p) => acc + p.tasks.length, 0);
   const progress = totalTasks > 0 ? (completedTasks / totalTasks) * 100 : 0;
@@ -352,7 +352,7 @@ function PortfolioCard({ portfolio, onSelect }: { portfolio: Portfolio; onSelect
   );
 }
 
-function ProjectList({ projects }: { projects: Project[] }) {
+export function ProjectList({ projects }: { projects: Project[] }) {
   const [expandedProject, setExpandedProject] = useState<string | null>(null);
 
   return (
@@ -415,7 +415,7 @@ function ProjectList({ projects }: { projects: Project[] }) {
   );
 }
 
-function PortfolioDetail({ portfolio, onBack }: { portfolio: Portfolio; onBack: () => void }) {
+export function PortfolioDetail({ portfolio, onBack }: { portfolio: Portfolio; onBack: () => void }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
@@ -485,7 +485,7 @@ function PortfolioDetail({ portfolio, onBack }: { portfolio: Portfolio; onBack: 
   );
 }
 
-function UnblockJarvisSection({
+export function UnblockJarvisSection({
   jarvisStatus,
   onTaskMarkedDone,
 }: {
@@ -673,9 +673,9 @@ function UnblockJarvisSection({
           void handleTakeAction(task);
         }}
         disabled={isTakingAction}
-        className="h-8 px-3.5 text-xs font-semibold rounded-md bg-emerald-200 text-emerald-900 hover:bg-emerald-100 border border-emerald-300 shadow-sm focus-visible:ring-2 focus-visible:ring-emerald-300/60"
+        className="h-7 w-full rounded-md border border-emerald-300 bg-emerald-100 px-2.5 text-[11px] font-semibold text-emerald-900 shadow-none hover:bg-emerald-200 focus-visible:ring-2 focus-visible:ring-emerald-300/60"
       >
-        {isTakingAction ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+        {isTakingAction ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
         <span className={isTakingAction ? 'ml-1.5' : ''}>{isTakingAction ? 'Taking…' : 'Take Action'}</span>
       </Button>
     );
@@ -694,9 +694,9 @@ function UnblockJarvisSection({
           void handleMarkAsDone(task);
         }}
         disabled={isMarkingDone}
-        className="h-8 px-3.5 text-xs rounded-md"
+        className="h-7 w-full rounded-md border-slate-300 px-2.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-900"
       >
-        {isMarkingDone ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+        {isMarkingDone ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
         <span className={isMarkingDone ? 'ml-1.5' : ''}>{isMarkingDone ? 'Marking…' : 'Mark as done'}</span>
       </Button>
     );
@@ -704,7 +704,7 @@ function UnblockJarvisSection({
 
   function renderTaskActionButtons(task: Task) {
     return (
-      <div className="flex flex-col items-stretch gap-1.5">
+      <div className="flex w-[106px] flex-col items-stretch gap-1">
         {renderTakeActionButton(task)}
         {renderMarkDoneButton(task)}
       </div>
@@ -841,7 +841,7 @@ function UnblockJarvisSection({
   );
 }
 
-function JarvisProgressSection({ jarvisStatus }: { jarvisStatus: DashboardData['jarvisStatus'] }) {
+export function JarvisProgressSection({ jarvisStatus }: { jarvisStatus: DashboardData['jarvisStatus'] }) {
   if (jarvisStatus.inProgress.length === 0) return null;
 
   return (
@@ -1036,7 +1036,7 @@ function AgentColumn({
   );
 }
 
-function useAgentsSnapshot() {
+export function useAgentsSnapshot() {
   const [snapshot, setSnapshot] = useState<AgentsSnapshotResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1139,7 +1139,7 @@ function findMainAgent(agents: AgentColumnData[]): AgentColumnData | undefined {
   );
 }
 
-function MainAgentPanel() {
+export function MainAgentPanel() {
   const { snapshot, loading, error, loadAgents, sendToSession } = useAgentsSnapshot();
   const agents = snapshot?.agents ?? [];
   const mainAgent = useMemo(() => findMainAgent(agents), [agents]);
@@ -1204,7 +1204,7 @@ function MainAgentPanel() {
   );
 }
 
-function AgentsTab() {
+export function AgentsTab() {
   const { snapshot, loading, error, loadAgents, sendToSession } = useAgentsSnapshot();
   const agents = snapshot?.agents ?? [];
 
