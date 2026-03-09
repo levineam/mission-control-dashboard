@@ -1,20 +1,16 @@
-import type { Task, Project } from './vault-parser';
-import { Target, User, Loader, Inbox, CheckCircle, AlertTriangle } from 'lucide-react';
+import type { Task, BoardSection } from './vault-parser';
+import { ListTodo, UserRound, CheckCircle } from 'lucide-react';
 
-/** Lane identifier matching Project Board sections/statuses */
-export type LaneId =
-  | 'next-best-action'
-  | 'needs-andrew'
-  | 'in-progress'
-  | 'backlog'
-  | 'done';
+/** AI-first lane identifiers: Queue → Needs You → Done */
+export type LaneId = 'queue' | 'needs-you' | 'done';
 
 /** Lane configuration for rendering */
 export interface LaneConfig {
   id: LaneId;
   title: string;
   color: string;
-  icon: typeof Target;
+  icon: typeof ListTodo;
+  description: string;
 }
 
 /** Task extended with kanban-specific fields */
@@ -38,39 +34,50 @@ export interface KanbanBoardData {
   totalTasks: number;
   lastUpdated: string;
   selectedProject: string | null;
+  selectedScope: string | null;
   availableProjects: string[];
+  availableScopes: string[];
 }
 
-/** Default lane configuration */
+/** 3-lane AI-first configuration */
 export const DEFAULT_LANES: LaneConfig[] = [
-  { id: 'next-best-action', title: 'Next Best Action', color: 'amber', icon: Target },
-  { id: 'needs-andrew', title: 'Needs Andrew', color: 'red', icon: User },
-  { id: 'in-progress', title: 'In Progress', color: 'blue', icon: Loader },
-  { id: 'backlog', title: 'Backlog', color: 'gray', icon: Inbox },
-  { id: 'done', title: 'Done', color: 'emerald', icon: CheckCircle },
+  {
+    id: 'queue',
+    title: 'Queue',
+    color: 'blue',
+    icon: ListTodo,
+    description: 'Work waiting to be done',
+  },
+  {
+    id: 'needs-you',
+    title: 'Needs You',
+    color: 'amber',
+    icon: UserRound,
+    description: 'Blocked — needs Andrew\'s input or decision',
+  },
+  {
+    id: 'done',
+    title: 'Done',
+    color: 'emerald',
+    icon: CheckCircle,
+    description: 'Completed tasks',
+  },
 ];
 
 /**
- * Determine which lane a task belongs to based on its properties
+ * Determine which lane a task belongs to.
+ * Uses the section-aware boardSection from parsing, with fallbacks.
  */
 function determineTaskLane(task: Task): LaneId {
-  // Needs Andrew tasks (highest priority)
-  if (task.needsAndrew) {
-    return 'needs-andrew';
-  }
+  // If section-aware parsing already classified it, use that
+  if (task.boardSection === 'needs-you') return 'needs-you';
+  if (task.boardSection === 'done') return 'done';
+  if (task.boardSection === 'queue') return 'queue';
 
-  // Completed tasks
-  if (task.completed) {
-    return 'done';
-  }
-
-  // High priority incomplete tasks → In Progress
-  if (task.priority === 'high') {
-    return 'in-progress';
-  }
-
-  // Default to backlog for incomplete tasks without specific markers
-  return 'backlog';
+  // Fallback for tasks with unknown section
+  if (task.completed) return 'done';
+  if (task.needsAndrew) return 'needs-you';
+  return 'queue';
 }
 
 /**
@@ -81,20 +88,26 @@ function getProjectBadge(task: Task): string {
 }
 
 /**
- * Transform a flat list of tasks into kanban lanes
+ * Transform a flat list of tasks into the 3-lane kanban.
+ * Supports filtering by scope (portfolio) and project.
  */
 export function transformToKanbanLanes(
   tasks: Task[],
-  selectedProject: string | null
+  selectedProject: string | null,
+  selectedScope: string | null
 ): KanbanLane[] {
-  // Filter by project if selected
-  const filteredTasks = selectedProject
-    ? tasks.filter((t) => t.source === selectedProject)
+  // Filter by scope (portfolio) first
+  let filteredTasks = selectedScope
+    ? tasks.filter((t) => t.portfolio === selectedScope)
     : tasks;
+
+  // Then filter by project
+  filteredTasks = selectedProject
+    ? filteredTasks.filter((t) => t.source === selectedProject)
+    : filteredTasks;
 
   // Group tasks by lane
   const tasksByLane = new Map<LaneId, KanbanTask[]>();
-
   DEFAULT_LANES.forEach((lane) => {
     tasksByLane.set(lane.id, []);
   });
@@ -113,35 +126,45 @@ export function transformToKanbanLanes(
   // Sort tasks within lanes: high priority first, then by lastUpdated
   tasksByLane.forEach((laneTasks) => {
     laneTasks.sort((a, b) => {
-      // High priority first
       if (a.priority === 'high' && b.priority !== 'high') return -1;
       if (b.priority === 'high' && a.priority !== 'high') return 1;
-
-      // Then by lastUpdated (newest first)
       return new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime();
     });
   });
 
-  // Build lane objects
   return DEFAULT_LANES.map((config) => {
-    const tasks = tasksByLane.get(config.id) || [];
+    const laneTasks = tasksByLane.get(config.id) || [];
     return {
       id: config.id,
       config,
-      tasks,
-      count: tasks.length,
+      tasks: laneTasks,
+      count: laneTasks.length,
     };
   });
 }
 
 /**
- * Extract unique project names from tasks
+ * Extract unique project names from tasks, optionally filtered by scope.
  */
-export function extractProjectNames(tasks: Task[]): string[] {
+export function extractProjectNames(tasks: Task[], scope?: string | null): string[] {
   const names = new Set<string>();
-  tasks.forEach((task) => {
+  const filteredTasks = scope ? tasks.filter((t) => t.portfolio === scope) : tasks;
+  filteredTasks.forEach((task) => {
     if (task.source) {
       names.add(task.source);
+    }
+  });
+  return Array.from(names).sort();
+}
+
+/**
+ * Extract unique portfolio (scope) names from tasks.
+ */
+export function extractScopeNames(tasks: Task[]): string[] {
+  const names = new Set<string>();
+  tasks.forEach((task) => {
+    if (task.portfolio) {
+      names.add(task.portfolio);
     }
   });
   return Array.from(names).sort();

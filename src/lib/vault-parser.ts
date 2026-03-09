@@ -3,6 +3,9 @@ import path from 'path';
 
 const VAULT_PATH = '/Users/andrew/Documents/Vault v3';
 
+/** Which board section a task was found in */
+export type BoardSection = 'needs-you' | 'queue' | 'done' | 'unknown';
+
 export interface Task {
   id: string;
   text: string;
@@ -15,6 +18,12 @@ export interface Task {
   linkedProject?: string;
   instructions?: string[];
   lastUpdated?: string;
+  /** Which board section this task was parsed from */
+  boardSection: BoardSection;
+  /** Portfolio this task's project belongs to */
+  portfolio?: string;
+  /** Program this task's project belongs to */
+  program?: string;
 }
 
 export interface Project {
@@ -56,11 +65,32 @@ export interface JarvisStatus {
   alternates: Task[];
 }
 
+/** Diagnostics for debugging empty/unexpected states */
+export interface ParseDiagnostics {
+  /** Number of portfolio files found */
+  portfolioFilesFound: number;
+  /** Number of project board files found */
+  projectBoardFilesFound: number;
+  /** Number of tasks extracted total */
+  totalTasksExtracted: number;
+  /** Number of tasks from Tasks.md */
+  tasksFromTasksMd: number;
+  /** Project names that yielded zero tasks */
+  emptyProjects: string[];
+  /** Any parsing errors encountered */
+  errors: string[];
+  /** Available portfolios for filtering */
+  availablePortfolios: string[];
+  /** Available projects grouped by portfolio */
+  projectsByPortfolio: Record<string, string[]>;
+}
+
 export interface DashboardData {
   portfolios: Portfolio[];
   jarvisStatus: JarvisStatus;
   allTasks: Task[];
   lastUpdated: string;
+  diagnostics: ParseDiagnostics;
 }
 
 function parseStatus(text: string): 'active' | 'blocked' | 'completed' | 'paused' {
@@ -73,7 +103,6 @@ function parseStatus(text: string): 'active' | 'blocked' | 'completed' | 'paused
   if (text.toLowerCase().includes('blocked') || text.toLowerCase().includes('attention')) {
     return 'blocked';
   }
-  // Default to active for variations like "active", "on track", "in progress"
   return 'active';
 }
 
@@ -84,7 +113,6 @@ function parseHealth(text: string): 'green' | 'yellow' | 'red' {
   if (text.toLowerCase().includes('attention') || text.toLowerCase().includes('early stage') || text.toLowerCase().includes('yellow')) {
     return 'yellow';
   }
-  // Default to green for variations like "on track", "active", "green"
   return 'green';
 }
 
@@ -276,10 +304,42 @@ function buildStatusTaskInstructions(rawLine: string, detailLines: string[]): st
   return [cleanInlineMarkdown(rawLine)];
 }
 
-function extractTasks(content: string, source: string, sourcePath: string): Task[] {
+/**
+ * Classify a section heading into a board section.
+ * Uses keyword matching against common patterns found across project boards.
+ */
+function classifySectionHeading(heading: string): BoardSection {
+  const lower = heading.toLowerCase().replace(/[#*_📦✅🔧🚀]/g, '').trim();
+
+  // "Needs Andrew" / "Needs You" → needs-you
+  if (/needs\s*(andrew|you|input|decision)/i.test(lower)) {
+    return 'needs-you';
+  }
+
+  // "Done" / "Completed" / "Shipped" → done
+  if (/\b(done|completed|shipped|finished)\b/i.test(lower)) {
+    return 'done';
+  }
+
+  // Everything else with tasks is queue: Backlog, In Progress, Active, Tasks,
+  // Autonomous Now, This Week, Next Actions, Roadmap, Waiting, etc.
+  return 'queue';
+}
+
+/**
+ * Section-aware task extraction from a project board file.
+ * Tracks which heading section each task belongs to and maps it to a BoardSection.
+ */
+function extractTasksSectionAware(
+  content: string,
+  source: string,
+  sourcePath: string,
+  projectPortfolio?: string,
+  projectProgram?: string,
+): Task[] {
   const tasks: Task[] = [];
-  const taskRegex = /^- \[([ x])\] (.+)$/gm;
-  let match;
+  const lines = content.split(/\r?\n/);
+  let currentSection: BoardSection = 'unknown';
   let index = 0;
 
   // Get file modification time for lastUpdated
@@ -290,30 +350,45 @@ function extractTasks(content: string, source: string, sourcePath: string): Task
   } catch {
     lastUpdated = new Date().toISOString();
   }
-  
-  while ((match = taskRegex.exec(content)) !== null) {
-    const completed = match[1] === 'x';
-    const text = match[2];
-    
-    // Check for "needs andrew" indicators
-    const needsAndrew = 
+
+  for (const line of lines) {
+    // Detect section headings (## or ###)
+    const headingMatch = line.match(/^#{2,3}\s+(.+)$/);
+    if (headingMatch) {
+      currentSection = classifySectionHeading(headingMatch[1]);
+      continue;
+    }
+
+    // Match task checkboxes
+    const taskMatch = line.match(/^- \[([ x])\] (.+)$/);
+    if (!taskMatch) continue;
+
+    const completed = taskMatch[1] === 'x';
+    const text = taskMatch[2];
+
+    // Override section if task is completed but wasn't in a "done" section
+    const effectiveSection = completed ? 'done' : currentSection;
+
+    // Check for "needs andrew" indicators in task text
+    const needsAndrew =
+      effectiveSection === 'needs-you' ||
       text.toLowerCase().includes('needs andrew') ||
       text.toLowerCase().includes('(admin)') ||
       text.toLowerCase().includes('andrew only') ||
       text.toLowerCase().includes('waiting on andrew');
-    
+
     // Check for priority indicators
     let priority: 'high' | 'medium' | 'low' | undefined;
-    if (text.toLowerCase().includes('high priority') || text.toLowerCase().includes('(top priority)') || text.toLowerCase().includes('critical')) {
+    if (text.toLowerCase().includes('high priority') || text.toLowerCase().includes('(top priority)') || text.toLowerCase().includes('critical') || text.includes('[P1]')) {
       priority = 'high';
-    } else if (text.includes('📅') || text.includes('deadline') || text.toLowerCase().includes('medium priority')) {
+    } else if (text.includes('📅') || text.includes('deadline') || text.toLowerCase().includes('medium priority') || text.includes('[P2]')) {
       priority = 'medium';
     }
-    
+
     // Extract due date if present
     const dueDateMatch = text.match(/📅\s*(\d{4}-\d{2}-\d{2})/);
     const dueDate = dueDateMatch ? dueDateMatch[1] : undefined;
-    
+
     // Extract linked project
     const firstLink = extractWikiLinks(text)[0];
     const linkedProject = firstLink?.target;
@@ -330,9 +405,71 @@ function extractTasks(content: string, source: string, sourcePath: string): Task
       linkedProject,
       instructions: deriveTaskInstructions(text),
       lastUpdated,
+      boardSection: effectiveSection,
+      portfolio: projectPortfolio,
+      program: projectProgram,
     });
   }
-  
+
+  return tasks;
+}
+
+/**
+ * Legacy extractTasks kept for non-project-board files.
+ */
+function extractTasks(content: string, source: string, sourcePath: string): Task[] {
+  const tasks: Task[] = [];
+  const taskRegex = /^- \[([ x])\] (.+)$/gm;
+  let match;
+  let index = 0;
+
+  let lastUpdated: string;
+  try {
+    const stats = fs.statSync(sourcePath);
+    lastUpdated = stats.mtime.toISOString();
+  } catch {
+    lastUpdated = new Date().toISOString();
+  }
+
+  while ((match = taskRegex.exec(content)) !== null) {
+    const completed = match[1] === 'x';
+    const text = match[2];
+
+    const needsAndrew =
+      text.toLowerCase().includes('needs andrew') ||
+      text.toLowerCase().includes('(admin)') ||
+      text.toLowerCase().includes('andrew only') ||
+      text.toLowerCase().includes('waiting on andrew');
+
+    let priority: 'high' | 'medium' | 'low' | undefined;
+    if (text.toLowerCase().includes('high priority') || text.toLowerCase().includes('(top priority)') || text.toLowerCase().includes('critical') || text.includes('[P1]')) {
+      priority = 'high';
+    } else if (text.includes('📅') || text.includes('deadline') || text.toLowerCase().includes('medium priority') || text.includes('[P2]')) {
+      priority = 'medium';
+    }
+
+    const dueDateMatch = text.match(/📅\s*(\d{4}-\d{2}-\d{2})/);
+    const dueDate = dueDateMatch ? dueDateMatch[1] : undefined;
+
+    const firstLink = extractWikiLinks(text)[0];
+    const linkedProject = firstLink?.target;
+
+    tasks.push({
+      id: `${sourcePath}-${index++}`,
+      text: cleanInlineMarkdown(text),
+      completed,
+      priority,
+      needsAndrew,
+      source,
+      sourcePath,
+      dueDate,
+      linkedProject,
+      instructions: deriveTaskInstructions(text),
+      lastUpdated,
+      boardSection: completed ? 'done' : 'queue',
+    });
+  }
+
   return tasks;
 }
 
@@ -341,27 +478,21 @@ function parsePortfolio(filePath: string): Portfolio | null {
     const content = fs.readFileSync(filePath, 'utf-8');
     const fileName = path.basename(filePath, '.md');
     const name = fileName.replace(' - Portfolio', '');
-    
-    // Skip template
+
     if (name === 'Templates') return null;
-    
-    // Extract vision
+
     const visionMatch = content.match(/## Vision\s*\n\n([^\n]+)/);
     const vision = visionMatch ? visionMatch[1] : '';
-    
-    // Extract health from status table
+
     const healthMatch = content.match(/Health\s*\|\s*([^\|]+)/);
     const health = healthMatch ? parseHealth(healthMatch[1]) : 'green';
-    
-    // Extract last review
+
     const reviewMatch = content.match(/Last Review\s*\|\s*(\d{4}-\d{2}-\d{2})/);
     const lastReview = reviewMatch ? reviewMatch[1] : undefined;
-    
-    // Extract active project count
+
     const projectCountMatch = content.match(/Active Projects\s*\|\s*(\d+)/);
     const activeProjectCount = projectCountMatch ? parseInt(projectCountMatch[1]) : 0;
-    
-    // Extract programs from table
+
     const programs: Program[] = [];
     const programTableMatch = content.match(/## Programs[\s\S]*?\|[\s\S]*?\|[\s\S]*?\n([\s\S]*?)(?=\n##|---|\n\n\n)/);
     if (programTableMatch) {
@@ -382,7 +513,7 @@ function parsePortfolio(filePath: string): Portfolio | null {
         }
       });
     }
-    
+
     return {
       id: name.toLowerCase().replace(/\s+/g, '-'),
       name,
@@ -404,30 +535,45 @@ function parseProject(filePath: string): Project | null {
   try {
     const content = fs.readFileSync(filePath, 'utf-8');
     const fileName = path.basename(filePath, '.md');
-    const name = fileName.replace(' - Project Board', '');
-    
-    // Skip template
+    const name = fileName.replace(' - Project Board', '').replace(' — Project Board', '');
+
     if (name === 'Templates') return null;
-    
-    // Extract status
+
+    // Extract status from body
     const statusMatch = content.match(/\*\*Status:\*\*\s*([^\n]+)/);
     const status = statusMatch ? parseStatus(statusMatch[1]) : 'active';
-    
+
     // Extract owner
     const ownerMatch = content.match(/\*\*Owner:\*\*\s*([^\n]+)/);
     const owner = ownerMatch ? ownerMatch[1].trim() : 'Unassigned';
-    
-    // Extract program
+
+    // Extract program from body OR frontmatter
+    let program: string | undefined;
     const programMatch = content.match(/\*\*Program:\*\*\s*\[\[([^\]]+)\]\]/);
-    const program = programMatch ? programMatch[1] : undefined;
-    
-    // Extract portfolio
+    if (programMatch) {
+      program = programMatch[1];
+    } else {
+      const fmProgramMatch = content.match(/^program:\s*"?([^"\n]+)"?\s*$/m);
+      if (fmProgramMatch && fmProgramMatch[1].trim()) {
+        program = fmProgramMatch[1].trim().replace(/\[\[|\]\]/g, '');
+      }
+    }
+
+    // Extract portfolio from body OR frontmatter
+    let portfolio: string | undefined;
     const portfolioMatch = content.match(/\*\*Portfolio:\*\*\s*\[\[([^\]]+)\]\]/);
-    const portfolio = portfolioMatch ? portfolioMatch[1].replace(' - Portfolio', '') : undefined;
-    
-    // Extract tasks
-    const tasks = extractTasks(content, name, filePath);
-    
+    if (portfolioMatch) {
+      portfolio = portfolioMatch[1].replace(' - Portfolio', '');
+    } else {
+      const fmPortfolioMatch = content.match(/^portfolio:\s*"?([^"\n]+)"?\s*$/m);
+      if (fmPortfolioMatch && fmPortfolioMatch[1].trim()) {
+        portfolio = fmPortfolioMatch[1].trim().replace(/\[\[|\]\]/g, '').replace(' - Portfolio', '');
+      }
+    }
+
+    // Use section-aware task extraction
+    const tasks = extractTasksSectionAware(content, name, filePath, portfolio, program);
+
     return {
       id: name.toLowerCase().replace(/\s+/g, '-'),
       name,
@@ -444,19 +590,28 @@ function parseProject(filePath: string): Project | null {
   }
 }
 
-function parseTasksMd(): JarvisStatus {
+function parseTasksMd(): { jarvisStatus: JarvisStatus; tasks: Task[] } {
   const tasksPath = path.join(VAULT_PATH, 'Tasks.md');
   const needsAndrew: Task[] = [];
   const inProgress: Task[] = [];
   const alternates: Task[] = [];
   let nextBestAction: Task | undefined;
-  
+  const collectedTasks: Task[] = [];
+
   try {
     const content = fs.readFileSync(tasksPath, 'utf-8');
-    
-    // Extract JARVIS-STATUS section
+
+    let lastUpdated: string;
+    try {
+      const stats = fs.statSync(tasksPath);
+      lastUpdated = stats.mtime.toISOString();
+    } catch {
+      lastUpdated = new Date().toISOString();
+    }
+
+    // Extract JARVIS-STATUS section (legacy, may not exist)
     const jarvisSection = content.match(/<!-- JARVIS-STATUS:START -->([\s\S]*?)<!-- JARVIS-STATUS:END -->/);
-    
+
     if (jarvisSection) {
       const statusContent = jarvisSection[1];
 
@@ -475,13 +630,13 @@ function parseTasksMd(): JarvisStatus {
           sourcePath: tasksPath,
           linkedProject: firstLink?.target,
           instructions: buildStatusTaskInstructions(nextItem.line, nextItem.detailLines),
+          boardSection: 'needs-you',
         };
       }
 
       const alternateItems = parseStatusListItems(statusContent, /^###\s+Alternates/i);
       alternateItems.forEach((item, idx) => {
         const firstLink = extractWikiLinks(item.line)[0];
-
         alternates.push({
           id: `alternate-${idx}`,
           text: cleanInlineMarkdown(item.line),
@@ -491,6 +646,7 @@ function parseTasksMd(): JarvisStatus {
           sourcePath: tasksPath,
           linkedProject: firstLink?.target,
           instructions: buildStatusTaskInstructions(item.line, item.detailLines),
+          boardSection: 'queue',
         });
       });
 
@@ -510,6 +666,7 @@ function parseTasksMd(): JarvisStatus {
           sourcePath: tasksPath,
           linkedProject: firstLink?.target,
           instructions: buildStatusTaskInstructions(item.line, item.detailLines),
+          boardSection: 'needs-you',
         });
       });
 
@@ -525,51 +682,108 @@ function parseTasksMd(): JarvisStatus {
           source: 'JARVIS In Progress',
           sourcePath: tasksPath,
           linkedProject: firstLink?.target,
+          boardSection: 'queue',
         });
       });
     }
-    
-    // Also extract from Active section
-    const activeMatch = content.match(/## Active[\s\S]*?(?=## Waiting|## Next|$)/);
+
+    // Also extract from "In Progress (Jarvis)" section and "Active" section
+    const inProgressSection = content.match(/## In Progress \(Jarvis\)([\s\S]*?)(?=\n## |$)/);
+    if (inProgressSection) {
+      const sectionTasks = extractTasks(inProgressSection[1], 'Tasks.md — In Progress', tasksPath);
+      sectionTasks.forEach((t) => {
+        t.boardSection = t.completed ? 'done' : 'queue';
+        collectedTasks.push(t);
+      });
+    }
+
+    const activeMatch = content.match(/## Active([\s\S]*?)(?=\n## |$)/);
     if (activeMatch) {
-      const activeTasks = extractTasks(activeMatch[0], 'Active Tasks', tasksPath);
+      const activeTasks = extractTasks(activeMatch[1], 'Tasks.md — Active', tasksPath);
       activeTasks.forEach(task => {
+        task.boardSection = task.completed ? 'done' : (task.needsAndrew ? 'needs-you' : 'queue');
         if (!task.completed && task.needsAndrew && !needsAndrew.find(t => t.text === task.text)) {
           needsAndrew.push(task);
         }
+        collectedTasks.push(task);
       });
     }
-    
+
   } catch (error) {
     console.error('Error parsing Tasks.md:', error);
   }
-  
-  return { needsAndrew, inProgress, nextBestAction, alternates };
+
+  // Include jarvisStatus tasks in collectedTasks for unified feed
+  if (nextBestAction) collectedTasks.push(nextBestAction);
+  collectedTasks.push(...needsAndrew);
+  collectedTasks.push(...inProgress);
+  collectedTasks.push(...alternates);
+
+  return {
+    jarvisStatus: { needsAndrew, inProgress, nextBestAction, alternates },
+    tasks: collectedTasks,
+  };
 }
 
 export async function getDashboardData(): Promise<DashboardData> {
   const notesPath = path.join(VAULT_PATH, 'Notes');
-  
+  const diagnostics: ParseDiagnostics = {
+    portfolioFilesFound: 0,
+    projectBoardFilesFound: 0,
+    totalTasksExtracted: 0,
+    tasksFromTasksMd: 0,
+    emptyProjects: [],
+    errors: [],
+    availablePortfolios: [],
+    projectsByPortfolio: {},
+  };
+
   // Find and parse portfolios
-  const portfolioFiles = fs.readdirSync(notesPath)
-    .filter(f => f.includes('Portfolio') && f.endsWith('.md') && !f.includes('Templates'));
-  
+  let portfolioFiles: string[] = [];
+  try {
+    portfolioFiles = fs.readdirSync(notesPath)
+      .filter(f => f.includes('Portfolio') && f.endsWith('.md') && !f.includes('Templates'));
+  } catch (err) {
+    diagnostics.errors.push(`Failed to read notes directory: ${err}`);
+  }
+  diagnostics.portfolioFilesFound = portfolioFiles.length;
+
   const portfolios: Portfolio[] = [];
   for (const file of portfolioFiles) {
     const portfolio = parsePortfolio(path.join(notesPath, file));
-    if (portfolio) portfolios.push(portfolio);
+    if (portfolio) {
+      portfolios.push(portfolio);
+      diagnostics.availablePortfolios.push(portfolio.name);
+    }
   }
-  
+
   // Find and parse projects
-  const projectFiles = fs.readdirSync(notesPath)
-    .filter(f => f.includes('Project Board') && f.endsWith('.md') && !f.includes('Templates'));
-  
+  let projectFiles: string[] = [];
+  try {
+    projectFiles = fs.readdirSync(notesPath)
+      .filter(f => (f.includes('Project Board') || f.includes('Project Board')) && f.endsWith('.md') && !f.includes('Templates'));
+  } catch (err) {
+    diagnostics.errors.push(`Failed to read project board files: ${err}`);
+  }
+  diagnostics.projectBoardFilesFound = projectFiles.length;
+
   const allProjects: Project[] = [];
   for (const file of projectFiles) {
     const project = parseProject(path.join(notesPath, file));
-    if (project) allProjects.push(project);
+    if (project) {
+      allProjects.push(project);
+      if (project.tasks.length === 0) {
+        diagnostics.emptyProjects.push(project.name);
+      }
+      // Build portfolio → projects index
+      const pKey = project.portfolio || '(No Portfolio)';
+      if (!diagnostics.projectsByPortfolio[pKey]) {
+        diagnostics.projectsByPortfolio[pKey] = [];
+      }
+      diagnostics.projectsByPortfolio[pKey].push(project.name);
+    }
   }
-  
+
   // Associate projects with portfolios
   portfolios.forEach(portfolio => {
     const portfolioProjects = allProjects.filter(p => p.portfolio === portfolio.name);
@@ -577,20 +791,33 @@ export async function getDashboardData(): Promise<DashboardData> {
     portfolio.activeProjectCount = portfolioProjects.filter(p => p.status === 'active').length;
     portfolio.blockedCount = portfolioProjects.filter(p => p.status === 'blocked').length;
   });
-  
-  // Collect all tasks
+
+  // Collect all tasks from projects
   const allTasks: Task[] = [];
   allProjects.forEach(project => {
     allTasks.push(...project.tasks);
   });
-  
-  // Parse JARVIS status
-  const jarvisStatus = parseTasksMd();
-  
+
+  // Parse Tasks.md and merge those tasks too
+  const { jarvisStatus, tasks: tasksMdTasks } = parseTasksMd();
+  diagnostics.tasksFromTasksMd = tasksMdTasks.length;
+
+  // Add Tasks.md tasks to allTasks (dedupe by text)
+  const existingTexts = new Set(allTasks.map(t => t.text.toLowerCase()));
+  tasksMdTasks.forEach(t => {
+    if (!existingTexts.has(t.text.toLowerCase())) {
+      allTasks.push(t);
+      existingTexts.add(t.text.toLowerCase());
+    }
+  });
+
+  diagnostics.totalTasksExtracted = allTasks.length;
+
   return {
     portfolios,
     jarvisStatus,
     allTasks,
-    lastUpdated: new Date().toISOString()
+    lastUpdated: new Date().toISOString(),
+    diagnostics,
   };
 }
