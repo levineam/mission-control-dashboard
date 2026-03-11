@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Card, CardContent } from '@/components/ui/card';
 import { KanbanBoard } from '@/components/kanban-board';
 import { ScopeProjectFilter } from '@/components/scope-project-filter';
@@ -15,6 +16,7 @@ interface ProjectBoardContentProps {
 }
 
 export function ProjectBoardContent({ data }: ProjectBoardContentProps) {
+  const router = useRouter();
   const [selectedScope, setSelectedScope] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -69,7 +71,8 @@ export function ProjectBoardContent({ data }: ProjectBoardContentProps) {
 
   const handleRefresh = () => {
     setIsRefreshing(true);
-    window.location.reload();
+    router.refresh();
+    setTimeout(() => setIsRefreshing(false), 800);
   };
 
   const formatLastUpdated = (isoString: string) => {

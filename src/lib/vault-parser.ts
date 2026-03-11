@@ -590,6 +590,16 @@ function parseProject(filePath: string): Project | null {
   }
 }
 
+function taskCollectionKey(task: Task): string {
+  return [task.sourcePath, task.source, task.id, task.text].map((value) => String(value || '').toLowerCase()).join('::');
+}
+
+function taskDedupKey(task: Task): string {
+  return [task.portfolio ?? '', task.source ?? task.sourcePath, task.text]
+    .map((value) => String(value || '').toLowerCase())
+    .join('::');
+}
+
 function parseTasksMd(): { jarvisStatus: JarvisStatus; tasks: Task[] } {
   const tasksPath = path.join(VAULT_PATH, 'Tasks.md');
   const needsAndrew: Task[] = [];
@@ -597,6 +607,14 @@ function parseTasksMd(): { jarvisStatus: JarvisStatus; tasks: Task[] } {
   const alternates: Task[] = [];
   let nextBestAction: Task | undefined;
   const collectedTasks: Task[] = [];
+  const collectedTaskKeys = new Set<string>();
+  const pushCollectedTask = (task: Task | undefined) => {
+    if (!task) return;
+    const key = taskCollectionKey(task);
+    if (collectedTaskKeys.has(key)) return;
+    collectedTaskKeys.add(key);
+    collectedTasks.push(task);
+  };
 
   try {
     const content = fs.readFileSync(tasksPath, 'utf-8');
@@ -697,7 +715,7 @@ function parseTasksMd(): { jarvisStatus: JarvisStatus; tasks: Task[] } {
       const sectionTasks = extractTasks(inProgressSection[1], 'Tasks.md — In Progress', tasksPath);
       sectionTasks.forEach((t) => {
         t.boardSection = t.completed ? 'done' : 'queue';
-        collectedTasks.push(t);
+        pushCollectedTask(t);
       });
     }
 
@@ -709,7 +727,7 @@ function parseTasksMd(): { jarvisStatus: JarvisStatus; tasks: Task[] } {
         if (!task.completed && task.needsAndrew && !needsAndrew.find(t => t.text === task.text)) {
           needsAndrew.push(task);
         }
-        collectedTasks.push(task);
+        pushCollectedTask(task);
       });
     }
 
@@ -718,10 +736,10 @@ function parseTasksMd(): { jarvisStatus: JarvisStatus; tasks: Task[] } {
   }
 
   // Include jarvisStatus tasks in collectedTasks for unified feed
-  if (nextBestAction) collectedTasks.push(nextBestAction);
-  collectedTasks.push(...needsAndrew);
-  collectedTasks.push(...inProgress);
-  collectedTasks.push(...alternates);
+  pushCollectedTask(nextBestAction);
+  needsAndrew.forEach(pushCollectedTask);
+  inProgress.forEach(pushCollectedTask);
+  alternates.forEach(pushCollectedTask);
 
   return {
     jarvisStatus: { needsAndrew, inProgress, nextBestAction, alternates },
@@ -813,9 +831,7 @@ export async function getDashboardData(): Promise<DashboardData> {
     projectsByName.set(`${project.name} — Project Board`, project);
   });
 
-  const existingTaskKeys = new Set(
-    allTasks.map((task) => `${(task.linkedProject ?? task.source ?? task.sourcePath).toLowerCase()}::${task.text.toLowerCase()}`)
-  );
+  const existingTaskKeys = new Set(allTasks.map((task) => taskDedupKey(task)));
 
   tasksMdTasks.forEach((task) => {
     const linkedProject = task.linkedProject ? projectsByName.get(task.linkedProject) : undefined;
@@ -828,7 +844,7 @@ export async function getDashboardData(): Promise<DashboardData> {
         }
       : task;
 
-    const taskKey = `${(hydratedTask.linkedProject ?? hydratedTask.source ?? hydratedTask.sourcePath).toLowerCase()}::${hydratedTask.text.toLowerCase()}`;
+    const taskKey = taskDedupKey(hydratedTask);
     if (!existingTaskKeys.has(taskKey)) {
       allTasks.push(hydratedTask);
       existingTaskKeys.add(taskKey);
