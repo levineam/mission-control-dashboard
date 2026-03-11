@@ -1,7 +1,6 @@
 'use client';
 
-import { Card } from '@/components/ui/card';
-import { getLaneColorClasses, DEFAULT_LANES } from '@/lib/project-board-lanes';
+import { getLaneColorClasses } from '@/lib/project-board-lanes';
 import type { KanbanLane } from '@/lib/project-board-lanes';
 
 interface MetricsStripProps {

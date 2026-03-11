@@ -21,7 +21,7 @@ export function KanbanBoard({ data }: KanbanBoardProps) {
       {/* Empty state */}
       {totalTasks === 0 && (
         <div className="flex items-center justify-center h-[400px] text-muted-foreground">
-          <p>No tasks found. Select a different project or check your vault configuration.</p>
+          <p>No tasks found. Adjust the scope or project filter above.</p>
         </div>
       )}
     </div>
