@@ -309,7 +309,7 @@ function buildStatusTaskInstructions(rawLine: string, detailLines: string[]): st
  * Uses keyword matching against common patterns found across project boards.
  */
 function classifySectionHeading(heading: string): BoardSection {
-  const lower = heading.toLowerCase().replace(/[#*_📦✅🔧🚀]/g, '').trim();
+  const lower = heading.toLowerCase().replace(/[#*_📦✅🔧🚀]/gu, '').trim();
 
   // "Needs Andrew" / "Needs You" → needs-you
   if (/needs\s*(andrew|you|input|decision)/i.test(lower)) {
@@ -455,7 +455,7 @@ function extractTasks(content: string, source: string, sourcePath: string): Task
     const linkedProject = firstLink?.target;
 
     tasks.push({
-      id: `${sourcePath}-${index++}`,
+      id: `${sourcePath}-${source}-${index++}`,
       text: cleanInlineMarkdown(text),
       completed,
       priority,
@@ -630,6 +630,7 @@ function parseTasksMd(): { jarvisStatus: JarvisStatus; tasks: Task[] } {
           sourcePath: tasksPath,
           linkedProject: firstLink?.target,
           instructions: buildStatusTaskInstructions(nextItem.line, nextItem.detailLines),
+          lastUpdated,
           boardSection: 'needs-you',
         };
       }
@@ -646,6 +647,7 @@ function parseTasksMd(): { jarvisStatus: JarvisStatus; tasks: Task[] } {
           sourcePath: tasksPath,
           linkedProject: firstLink?.target,
           instructions: buildStatusTaskInstructions(item.line, item.detailLines),
+          lastUpdated,
           boardSection: 'queue',
         });
       });
@@ -666,6 +668,7 @@ function parseTasksMd(): { jarvisStatus: JarvisStatus; tasks: Task[] } {
           sourcePath: tasksPath,
           linkedProject: firstLink?.target,
           instructions: buildStatusTaskInstructions(item.line, item.detailLines),
+          lastUpdated,
           boardSection: 'needs-you',
         });
       });
@@ -682,6 +685,7 @@ function parseTasksMd(): { jarvisStatus: JarvisStatus; tasks: Task[] } {
           source: 'JARVIS In Progress',
           sourcePath: tasksPath,
           linkedProject: firstLink?.target,
+          lastUpdated,
           boardSection: 'queue',
         });
       });
@@ -802,12 +806,32 @@ export async function getDashboardData(): Promise<DashboardData> {
   const { jarvisStatus, tasks: tasksMdTasks } = parseTasksMd();
   diagnostics.tasksFromTasksMd = tasksMdTasks.length;
 
-  // Add Tasks.md tasks to allTasks (dedupe by text)
-  const existingTexts = new Set(allTasks.map(t => t.text.toLowerCase()));
-  tasksMdTasks.forEach(t => {
-    if (!existingTexts.has(t.text.toLowerCase())) {
-      allTasks.push(t);
-      existingTexts.add(t.text.toLowerCase());
+  const projectsByName = new Map<string, Project>();
+  allProjects.forEach((project) => {
+    projectsByName.set(project.name, project);
+    projectsByName.set(`${project.name} - Project Board`, project);
+    projectsByName.set(`${project.name} — Project Board`, project);
+  });
+
+  const existingTaskKeys = new Set(
+    allTasks.map((task) => `${(task.linkedProject ?? task.source ?? task.sourcePath).toLowerCase()}::${task.text.toLowerCase()}`)
+  );
+
+  tasksMdTasks.forEach((task) => {
+    const linkedProject = task.linkedProject ? projectsByName.get(task.linkedProject) : undefined;
+    const hydratedTask = linkedProject
+      ? {
+          ...task,
+          source: linkedProject.name,
+          portfolio: task.portfolio ?? linkedProject.portfolio,
+          program: task.program ?? linkedProject.program,
+        }
+      : task;
+
+    const taskKey = `${(hydratedTask.linkedProject ?? hydratedTask.source ?? hydratedTask.sourcePath).toLowerCase()}::${hydratedTask.text.toLowerCase()}`;
+    if (!existingTaskKeys.has(taskKey)) {
+      allTasks.push(hydratedTask);
+      existingTaskKeys.add(taskKey);
     }
   });
 

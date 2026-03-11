@@ -5,7 +5,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { KanbanBoard } from '@/components/kanban-board';
 import { ScopeProjectFilter } from '@/components/scope-project-filter';
 import { MetricsStrip } from '@/components/metrics-strip';
-import { transformToKanbanLanes, extractProjectNames, extractScopeNames } from '@/lib/project-board-lanes';
+import { transformToKanbanLanes } from '@/lib/project-board-lanes';
 import { RefreshCw, AlertTriangle, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { DashboardData } from '@/lib/vault-parser';
@@ -20,16 +20,27 @@ export function ProjectBoardContent({ data }: ProjectBoardContentProps) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
 
+  const diagnostics = data.diagnostics;
+
   // Extract all tasks
   const allTasks = useMemo(() => data.allTasks, [data.allTasks]);
 
-  // Extract scope (portfolio) names
-  const scopeNames = useMemo(() => extractScopeNames(allTasks), [allTasks]);
+  // Extract scope (portfolio) names from indexed diagnostics so empty scopes remain selectable.
+  const scopeNames = useMemo(() => {
+    const names = new Set<string>(diagnostics.availablePortfolios);
+    Object.keys(diagnostics.projectsByPortfolio).forEach((name) => {
+      if (name && name !== '(No Portfolio)') names.add(name);
+    });
+    return Array.from(names).sort();
+  }, [diagnostics]);
 
-  // Extract project names (filtered by scope)
+  // Extract project names (filtered by scope) from indexed diagnostics so empty projects remain selectable.
   const projectNames = useMemo(() => {
-    return extractProjectNames(allTasks, selectedScope);
-  }, [allTasks, selectedScope]);
+    if (selectedScope) {
+      return [...new Set(diagnostics.projectsByPortfolio[selectedScope] ?? [])].sort();
+    }
+    return [...new Set(Object.values(diagnostics.projectsByPortfolio).flat().filter(Boolean))].sort();
+  }, [diagnostics, selectedScope]);
 
   // Transform tasks into kanban lanes with both filters
   const kanbanData = useMemo(() => {
@@ -71,8 +82,6 @@ export function ProjectBoardContent({ data }: ProjectBoardContentProps) {
       hour12: true,
     });
   };
-
-  const diagnostics = data.diagnostics;
 
   return (
     <div className="flex flex-col h-full">
