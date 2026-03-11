@@ -595,7 +595,8 @@ function taskCollectionKey(task: Task): string {
 }
 
 function taskDedupKey(task: Task): string {
-  return [task.portfolio ?? '', task.source ?? task.sourcePath, task.text]
+  const taskState = task.completed ? 'completed' : `open:${task.boardSection ?? 'unknown'}`;
+  return [task.portfolio ?? '', task.source ?? task.sourcePath, taskState, task.text]
     .map((value) => String(value || '').toLowerCase())
     .join('::');
 }
@@ -783,7 +784,7 @@ export async function getDashboardData(): Promise<DashboardData> {
   let projectFiles: string[] = [];
   try {
     projectFiles = fs.readdirSync(notesPath)
-      .filter(f => (f.includes('Project Board') || f.includes('Project Board')) && f.endsWith('.md') && !f.includes('Templates'));
+      .filter(f => f.includes('Project Board') && f.endsWith('.md') && !f.includes('Templates'));
   } catch (err) {
     diagnostics.errors.push(`Failed to read project board files: ${err}`);
   }
